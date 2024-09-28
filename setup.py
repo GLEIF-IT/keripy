@@ -74,7 +74,7 @@ setup(
     keywords=[
         # eg: 'keyword1', 'keyword2', 'keyword3',
     ],
-    python_requires='>=3.12.2',
+    python_requires='>=3.11.6',
     install_requires=[
                         'lmdb>=1.4.1',
                         'pysodium>=0.7.17',
@@ -83,7 +83,7 @@ setup(
                         'cbor2>=5.6.2',
                         'multidict>=6.0.5',
                         'ordered-set>=4.1.0',
-                        'hio>=0.6.14',
+                        "hio @ git+https://github.com/gleif-it/hio.git@main#egg=hio"
                         'multicommand>=1.0.0',
                         'jsonschema>=4.21.1',
                         'falcon>=3.1.3',
