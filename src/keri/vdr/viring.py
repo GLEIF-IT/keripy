@@ -392,7 +392,7 @@ class Reger(dbing.LMDBer):
         """Clear credential event escrows"""
         # self.oots, self.twes, self.taes
         count = 0
-        for (k, _) in self.getOotItemIter():
+        for (k, _, _) in self.getOotItemIter():
             count += 1
             self.delOot(k)
         logger.info(f"TEL: Cleared {count} out of order escrows.")

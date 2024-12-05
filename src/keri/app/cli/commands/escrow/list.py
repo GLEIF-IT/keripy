@@ -168,7 +168,7 @@ def escrows(tymth, tock=0.0, **opts):
             reger = viring.Reger(name=hby.name, db=hby.db, temp=False)
 
             if (not escrow) or escrow == 'tel-out-of-order':
-                escrows["tel-out-of-order"] = sum(1 for key, _ in reger.getOotItemIter())
+                escrows["tel-out-of-order"] = sum(1 for key, _, _ in reger.getOotItemIter())
 
             if (not escrow) or escrow == 'tel-partially-witnessed':
                 escrows["tel-partially-witnessed"] = sum(1 for key, _ in reger.getAllItemIter(reger.twes))
