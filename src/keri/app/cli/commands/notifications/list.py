@@ -85,7 +85,7 @@ class NotesDoer(doing.DoDoer):
             attrs = notice.attrs
             route = attrs['r']
 
-            print(keys, notice)
+            print(keys, notice.pad)
 
         self.remove([self.hbyDoer,])
         return
