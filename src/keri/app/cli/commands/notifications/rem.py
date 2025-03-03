@@ -5,7 +5,6 @@ keri.kli.commands module
 
 """
 import argparse
-import json
 
 from keri import help
 from hio.base import doing
@@ -26,7 +25,8 @@ parser.add_argument('--base', '-b', help='additional optional prefix to file loc
 parser.add_argument('--alias', '-a', help='human readable alias for the new identifier prefix', default=None)
 parser.add_argument('--passcode', '-p', help='22 character encryption passcode for keystore (is not saved)',
                     dest="bran", default=None)  # passcode => bran
-parser.add_argument("--verbose", "-V", help="print JSON of all current events", action="store_true")
+parser.add_argument("--rid", "-r", help='notification SAID to mark as read', default=None)
+parser.add_argument("--all", "-a", help="mark all notifications as read", action="store_true")
 
 
 def handler(args):
@@ -41,29 +41,31 @@ def handler(args):
     base = args.base
     bran = args.bran
     alias = args.alias
-    verbose = args.verbose
+    rid = args.rid
+    all = args.all
 
-    notesDoer = NotesDoer(name=name, base=base, alias=alias, bran=bran, verbose=verbose)
+    removeDoer = RemoveDoer(name=name, base=base, alias=alias, bran=bran, rid=rid, all=all)
 
-    doers = [notesDoer]
+    doers = [removeDoer]
     return doers
 
 
-class NotesDoer(doing.DoDoer):
-    def __init__(self, name, base, alias, bran, verbose):
+class RemoveDoer(doing.DoDoer):
+    def __init__(self, name, base, alias, bran, rid, all):
 
         hby = existing.setupHby(name=name, base=base, bran=bran)
         self.hbyDoer = habbing.HaberyDoer(habery=hby)  # setup doer
         self.alias = alias
         self.hby = hby
-        self.verbose = verbose
         self.notifier = notifying.Notifier(hby=self.hby)
+        self.rid = rid
+        self.all = all
 
-        doers = [self.hbyDoer, doing.doify(self.readDo)]
+        doers = [self.hbyDoer, doing.doify(self.remDoer)]
 
-        super(NotesDoer, self).__init__(doers=doers)
+        super(RemoveDoer, self).__init__(doers=doers)
 
-    def readDo(self, tymth, tock=0.0):
+    def remDoer(self, tymth, tock=0.0):
         """
         Parameters:
             tymth (function): injected function wrapper closure returned by .tymen() of
@@ -77,18 +79,11 @@ class NotesDoer(doing.DoDoer):
         self.tock = tock
         _ = (yield self.tock)
 
-        print("Waiting for notifications...")
+        if self.rid is None and not self.all:
+            print("Must specify either --rid or --all")
+            return
 
-        while self.notifier.noter.notes.cntAll() == 0:
-            yield self.tock
-
-        for keys, notice in self.notifier.noter.notes.getItemIter():
-            if self.verbose:
-                print(keys)
-                print(json.dumps(notice.pad, indent=4))
-            else:
-                print(keys, notice.attrs.get('d', 'no digest'), notice.attrs('t', 'no type'), notice.attrs.get('r'))
-
+        self.notifier.rem(rid=self.rid)
 
         self.remove([self.hbyDoer,])
         return
