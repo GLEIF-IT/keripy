@@ -87,7 +87,7 @@ class NotesDoer(doing.DoDoer):
                 print(keys)
                 print(json.dumps(notice.pad, indent=4))
             else:
-                print(keys, notice.rid,  notice.attrs.get('r', 'no route'))
+                print(keys, notice.attrs.get('r', 'no route'))
 
 
         self.remove([self.hbyDoer,])
