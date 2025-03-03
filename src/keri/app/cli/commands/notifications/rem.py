@@ -25,8 +25,8 @@ parser.add_argument('--base', '-b', help='additional optional prefix to file loc
 parser.add_argument('--alias', '-a', help='human readable alias for the new identifier prefix', default=None)
 parser.add_argument('--passcode', '-p', help='22 character encryption passcode for keystore (is not saved)',
                     dest="bran", default=None)  # passcode => bran
-parser.add_argument("--rid", "-r", help='notification SAID to mark as read', default=None)
-parser.add_argument("--all", "-a", help="mark all notifications as read", action="store_true")
+parser.add_argument("--rid", '-r', help='notification SAID to mark as read', default=None)
+parser.add_argument("--all", help="mark all notifications as read", action="store_true")
 
 
 def handler(args):
