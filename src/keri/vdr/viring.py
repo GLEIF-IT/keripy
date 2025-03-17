@@ -17,6 +17,7 @@ from .. import kering
 from ..app import signing
 from ..core import coring, serdering
 from ..db import dbing, basing
+from ..db.dbing import snKey
 from ..vdr import eventing
 
 from keri import help
@@ -389,21 +390,21 @@ class Reger(dbing.LMDBer):
         """Clear credential event escrows"""
         # self.oots, self.twes, self.taes
         count = 0
-        for (k, _) in self.getOotItemIter():
+        for (k1, k2, _) in self.getOotItemIter():
             count += 1
-            self.delOot(k)
+            self.delOot(snKey(k1, k2))
         logger.info(f"TEL: Cleared {count} out of order escrows.")
 
         count = 0
-        for (k, ) in self.getAllItemIter(self.twes):
+        for (k1, k2, _) in self.getAllItemIter(self.twes):
             count += 1
-            self.delTwe(k)
+            self.delTwe(snKey(k1, k2))
         logger.info(f"TEL: Cleared {count} partially witnessed escrows.")
 
         count = 0
-        for (k, _) in self.getAllItemIter(self.taes):
+        for (k1, k2, _) in self.getAllItemIter(self.taes):
             count += 1
-            self.delTae(k)
+            self.delTae(snKey(k1, k2))
         logger.info(f"TEL: Cleared {count} anchorless escrows.")
 
         for name, sub, desc in [
@@ -881,7 +882,7 @@ class Reger(dbing.LMDBer):
 
     def getOotItemIter(self):
         """
-        Return iterator of all items in .taes
+        Return iterator of all items in .oots
 
         """
         return self.getAllItemIter(self.oots, split=True)
