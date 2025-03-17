@@ -228,7 +228,10 @@ class Exchanger:
             self.hby.db.erpy.pin(keys=(pdig,), val=saider)
 
         self.hby.db.exns.put(keys=(dig,), val=serder)
-        recipient = serder.ked['rp']
+        # special handling for 1.1.18 -> 1.1.32
+        recipient = None
+        if 'rp' in serder.ked:
+            recipient = serder.ked['rp']
         sender = serder.ked['i']
         route = serder.ked['r']
         logger.info("Saved exn event route = %s SAID = %s sender %s -> recipient %s",
