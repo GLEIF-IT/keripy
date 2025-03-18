@@ -392,19 +392,19 @@ class Reger(dbing.LMDBer):
         count = 0
         for (k1, k2, _) in self.getOotItemIter():
             count += 1
-            self.delOot(snKey(k1, k2))
+            self.delOot(snKey(k1, int(k2, 16)))
         logger.info(f"TEL: Cleared {count} out of order escrows.")
 
         count = 0
         for (k1, k2, _) in self.getAllItemIter(self.twes):
             count += 1
-            self.delTwe(snKey(k1, k2))
+            self.delTwe(snKey(k1, int(k2, 16)))
         logger.info(f"TEL: Cleared {count} partially witnessed escrows.")
 
         count = 0
         for (k1, k2, _) in self.getAllItemIter(self.taes):
             count += 1
-            self.delTae(snKey(k1, k2))
+            self.delTae(snKey(k1, int(k2, 16)))
         logger.info(f"TEL: Cleared {count} anchorless escrows.")
 
         for name, sub, desc in [
