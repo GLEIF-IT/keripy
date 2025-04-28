@@ -8,7 +8,7 @@ import argparse
 import datetime
 
 import sys
-from keri import help
+from hio import help
 from hio.base import doing
 
 from keri.app import indirecting

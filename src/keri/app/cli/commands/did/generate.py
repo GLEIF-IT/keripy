@@ -9,7 +9,7 @@ import urllib
 from urllib.parse import urlparse
 
 import sys
-from keri import help
+from hio import help
 from hio.base import doing
 
 from keri import kering

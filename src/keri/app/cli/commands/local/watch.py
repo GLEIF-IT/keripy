@@ -8,7 +8,7 @@ import random
 import sys
 import time
 
-from keri import help
+from hio import help
 from hio.base import doing
 from keri.app import agenting, indirecting, habbing, forwarding
 from keri.app.cli.common import existing, terming

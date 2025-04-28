@@ -2,7 +2,7 @@ import argparse
 import json
 from typing import Optional
 
-from keri import help
+from hio import help
 from hio.base import doing
 
 from keri import kering

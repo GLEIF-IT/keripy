@@ -8,7 +8,7 @@ Utilities for demos
 import argparse
 import logging
 
-from keri import help
+from hio import help
 from hio.base import doing
 
 from ..app import habbing, keeping, apping

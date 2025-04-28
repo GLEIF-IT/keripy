@@ -5,7 +5,7 @@ keri.kli.commands module
 """
 import argparse
 
-from keri import help
+from hio import help
 from hio.base import doing
 from prettytable import PrettyTable
 

@@ -9,7 +9,7 @@ import datetime
 import random
 import sys
 
-from keri import help
+from hio import help
 from hio.base import doing
 
 from keri.app import connecting, indirecting, querying, watching

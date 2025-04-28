@@ -25,7 +25,7 @@ class Exchanger:
      Peer to Peer KERI message Exchanger.
     """
 
-    TimeoutPSE = 20  # seconds to timeout partially signed or delegated escrows
+    TimeoutPSE = 10  # seconds to timeout partially signed or delegated escrows
 
     def __init__(self, hby, handlers, cues=None, delta=ExchangeMessageTimeWindow):
         """ Initialize instance
@@ -80,19 +80,14 @@ class Exchanger:
         if tsgs:
             for prefixer, seqner, ssaider, sigers in tsgs:  # iterate over each tsg
                 if sender != prefixer.qb64:  # sig not by aid
-                    msg = (f"Skipped signature not from aid = "
-                           f"{sender}, from {prefixer.qb64} on exn msg = {serder.said}")
-                    logger.info(msg)
-                    logger.debug("Exchange message body=\n%s\n", serder.pretty())
-                    raise MissingSignatureError(msg)
+                    raise MissingSignatureError(f"Exchange process: skipped signature not from aid="
+                                                f"{sender}, from {prefixer.qb64} on exn msg=\n{serder.pretty()}\n")
 
                 if prefixer.qb64 not in self.kevers or self.kevers[prefixer.qb64].sn < seqner.sn:
                     if self.escrowPSEvent(serder=serder, tsgs=tsgs, pathed=pathed):
                         self.cues.append(dict(kin="query", q=dict(r="logs", pre=prefixer.qb64, sn=seqner.snh)))
-                        msg = f"Unable to find sender {prefixer.qb64} in kevers for evt = {serder.said}"
-                        logger.info(msg)
-                    logger.debug("Exchange message body=\n%s\n", serder.pretty())
-                    raise MissingSignatureError(msg)
+                    raise MissingSignatureError(f"Unable to find sender {prefixer.qb64} in kevers"
+                                                f" for evt = {serder.ked}.")
 
                 # Verify the signatures are valid and that the signature threshold as of the signing event is met
                 tholder, verfers = self.hby.db.resolveVerifiers(pre=prefixer.qb64, sn=seqner.sn, dig=ssaider.qb64)
@@ -101,35 +96,23 @@ class Exchanger:
                 if not tholder.satisfy(indices):  # We still don't have all the sigers, need to escrow
                     if self.escrowPSEvent(serder=serder, tsgs=tsgs, pathed=pathed):
                         self.cues.append(dict(kin="query", q=dict(r="logs", pre=prefixer.qb64, sn=seqner.snh)))
-                    msg = (f"Not enough signatures in idx={indices} route={route} "
-                           f"for evt = {serder.said} recipient={serder.ked.get('rp', '')}")
-                    logger.info(msg)
-                    logger.debug("Exchange message body=\n%s\n", serder.pretty())
-                    raise MissingSignatureError(msg)
+                    raise MissingSignatureError(f"Not enough signatures in  {indices}"
+                                                f" for evt = {serder.ked}.")
 
         elif cigars:
             for cigar in cigars:
                 if sender != cigar.verfer.qb64:  # cig not by aid
-                    msg = (f"Skipped cig not from aid={sender} route={route} "
-                           f"for exn evt = {serder.said} recipient={serder.ked.get('rp', '')}")
-                    logger.info(msg)
-                    logger.debug("Exchange message body=\n%s\n", serder.pretty())
-                    raise MissingSignatureError(msg)
+                    raise MissingSignatureError(" process: skipped cig not from aid="
+                                                "%s on exn msg=\n%s\n", sender, serder.pretty())
 
                 if not cigar.verfer.verify(cigar.raw, serder.raw):  # cig not verify
-                    msg = (f"Failure satisfying exn on cigs for {cigar} route={route} "
-                           f"for evt = {serder.said} recipient={serder.ked.get('rp', '')}")
-                    logger.info(msg)
-                    logger.debug("Exchange message body=\n%s\n", serder.pretty())
-                    raise MissingSignatureError(msg)
+                    raise MissingSignatureError("Failure satisfying exn on cigs for {}"
+                                                " for evt = {}.".format(cigar,
+                                                                        serder.ked))
         else:
             self.escrowPSEvent(serder=serder, tsgs=[], pathed=pathed)
-            msg = (
-                f"Failure satisfying exn, no cigs or sigs for evt = {serder.said} "
-                f"on route {route} recipient = {serder.ked.get('rp', '')}")
-            logger.info(msg)
-            logger.debug("Exchange message body=\n%s\n", serder.pretty())
-            raise MissingSignatureError(msg)
+            raise MissingSignatureError("Failure satisfying exn, no cigs or sigs"
+                                        " for evt = {}.".format(serder.ked))
 
         e = coring.Pather(path=["e"])
 
@@ -159,13 +142,13 @@ class Exchanger:
         # Perform behavior specific verification, think IPEX chaining requirements
         try:
             if not behavior.verify(serder=serder, **kwargs):
-                logger.error("exn event for route %s failed behavior verification.  said=%s", route, serder.said)
-                logger.debug(f"Event=\n%s\n", serder.pretty())
+                logger.info(f"exn event for route {route} failed behavior verfication.  said={serder.said}")
+                logger.debug(f"event=\n{serder.pretty()}\n")
                 return
 
         except AttributeError:
-            logger.debug("Behavior for %s missing or does not have verify for said %s", route, serder.said)
-            logger.debug("Exn Event Body=\n%s\n", serder.pretty())
+            logger.info(f"Behavior for {route} missing or does not have verify for said={serder.said}")
+            logger.debug(f"event=\n{serder.pretty()}\n")
 
         # Always persist events
         self.logEvent(serder, pathed, tsgs, cigars, essrs)
@@ -175,8 +158,8 @@ class Exchanger:
         try:
             behavior.handle(serder=serder, **kwargs)
         except AttributeError:
-            logger.debug("Behavior for %s missing or does not have handle for SAID=%s", route, serder.said)
-            logger.debug("Event=\n%s\n", serder.pretty())
+            logger.info(f"Behavior for {route} missing or does not have handle for said={serder.said}")
+            logger.debug(f"event=\n{serder.pretty()}\n")
 
     def processEscrow(self):
         """ Process all escrows for `exn` messages
@@ -248,23 +231,24 @@ class Exchanger:
                 self.processEvent(serder=serder, tsgs=tsgs, pathed=pathed, **kwargs)
 
             except MissingSignatureError as ex:
-                if logger.isEnabledFor(logging.TRACE):
-                    logger.trace("Exchange partially signed unescrow failed: %s\n", ex.args[0])
-                    logger.debug(f"Event body=\n%s\n", serder.pretty())
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.info("Exchange partially signed unescrow failed: %s", ex.args[0])
+                else:
+                    logger.info("Exchange partially signed failed: %s", ex.args[0])
             except Exception as ex:
                 self.hby.db.epse.rem(dig)
                 self.hby.db.epsd.rem(dig)
                 self.hby.db.esigs.rem(dig)
                 if logger.isEnabledFor(logging.DEBUG):
-                    logger.exception("Exchanger: partially signed unescrowed: %s", ex.args[0])
+                    logger.exception("Exchange partially signed unescrowed: %s", ex.args[0])
                 else:
-                    logger.error("Exchanger: partially signed unescrowed: %s", ex.args[0])
+                    logger.error("Exchange partially signed unescrowed: %s", ex.args[0])
             else:
                 self.hby.db.epse.rem(dig)
                 self.hby.db.esigs.rem(dig)
-                logger.info("Exchanger: unescrow succeeded in valid exchange: "
+                logger.info("Exchanger unescrow succeeded in valid exchange: "
                             "creder=%s", serder.said)
-                logger.debug("Event=\n%s\n", serder.pretty())
+                logger.debug(f"event=\n{serder.pretty()}\n")
 
     def logEvent(self, serder, pathed=None, tsgs=None, cigars=None, essrs=None):
         dig = serder.said
@@ -554,35 +538,27 @@ def verify(hby, serder):
     accepted = False
     for prefixer, seqner, ssaider, sigers in tsgs:
         if prefixer.qb64 not in hby.kevers or hby.kevers[prefixer.qb64].sn < seqner.sn:
-            msg = f"Unable to find sender {prefixer.qb64} in kevers for evt = {serder.said}"
-            logger.info(msg)
-            logger.debug("Exn Body=\n%s\n", serder.pretty())
-            raise MissingSignatureError(msg)
+            raise MissingSignatureError(f"Unable to find sender {prefixer.qb64} in kevers"
+                                        f" for evt = {serder.ked}.")
 
         # Verify the signatures are valid and that the signature threshold as of the signing event is met
         tholder, verfers = hby.db.resolveVerifiers(pre=prefixer.qb64, sn=seqner.sn, dig=ssaider.qb64)
         _, indices = eventing.verifySigs(serder.raw, sigers, verfers)
 
         if not tholder.satisfy(indices):  # We still don't have all the sigers, need to escrow
-            msg = f"Not enough signatures in idx={indices} for evt = {serder.said}"
-            logger.info(msg)
-            logger.debug("Exn Body=\n%s\n", serder.pretty())
-            raise MissingSignatureError(msg)
+            raise MissingSignatureError(f"Not enough signatures in  {indices}"
+                                        f" for evt = {serder.ked}.")
         accepted = True
 
     cigars = hby.db.ecigs.get(keys=(serder.said,))
     for cigar in cigars:
         if not cigar.verfer.verify(cigar.raw, serder.raw):  # cig not verify
-            msg = f"Failure satisfying exn on cigs for {cigar} for evt = {serder.said}"
-            logger.info(msg)
-            logger.debug("Exn Body=\n%s\n", serder.pretty())
-            raise MissingSignatureError(msg)
+            raise MissingSignatureError("Failure satisfying exn on cigs for {}"
+                                        " for evt = {}.".format(cigar,
+                                                                serder.ked))
         accepted = True
 
     if not accepted:
-        msg = f"No valid signatures stored for evt = {serder.said}"
-        logger.info(msg)
-        logger.debug("Exn Body=\n%s\n", serder.pretty())
-        raise MissingSignatureError(msg)
+        raise MissingSignatureError(f"No valid signatures stored for evt = {serder.ked}")
 
     return tsgs, cigars
