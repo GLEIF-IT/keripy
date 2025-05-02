@@ -1,7 +1,7 @@
 
 .PHONY: build-keri build-witness-demo publish-keri-witness-demo publish-keri
 
-VERSION=1.2.8
+VERSION=1.2.8-rc2
 REGISTRY=gleif
 IMAGE=keri
 LATEST_TAG=$(REGISTRY)/$(IMAGE):latest

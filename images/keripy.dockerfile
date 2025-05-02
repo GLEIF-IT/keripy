@@ -36,6 +36,7 @@ FROM ${BASE}
 
 RUN apk --no-cache add \
     bash \
+    curl \
     alpine-sdk \
     libsodium-dev
 
