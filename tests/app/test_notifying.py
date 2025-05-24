@@ -3,17 +3,12 @@
 tests.app.test_multisig module
 
 """
-import datetime
-import os
-
 import pytest
 
-from keri.app import notifying, habbing
-from keri.app.notifying import Noter, KERINoterMapSizeKey
+from keri.app import notifying, habbing, configing
+from keri.app.notifying import Noter
 from keri.core import coring
 from keri.db import dbing
-from keri.db.basing import KERIBaserMapSizeKey
-from keri.db.dbing import LMDBer
 from keri.help import helping
 
 
@@ -226,37 +221,15 @@ def test_notifier(mockHelpingNowUTC):
     assert notifier.mar(note.rid) is False
     assert notifier.rem(note.rid) is True
 
-def test_noter_db_size_set_from_env_var():
-    # Clear environment before test
-    if KERIBaserMapSizeKey in os.environ:
-        os.environ.pop(KERIBaserMapSizeKey)
-    if KERINoterMapSizeKey in os.environ:
-        os.environ.pop(KERINoterMapSizeKey)
 
-    new_map_size = 10737418240
-    # Default map size works
-    noter = Noter()
-    assert noter.env.info()['map_size'] != new_map_size, "Expected map size to be the default 10MB"
-    assert noter.env.info()['map_size'] == LMDBer.MapSize, "Expected map size to be the default 10MB"
+def test_noter_config_with_file():
+    cf = configing.Configer()
+    configDict = dict(
+        noter=dict(
+            mapSize="1_073_741_824"
+        )
+    )
+    cf.put(configDict)
 
-    # Specific map size works
-    os.environ[KERINoterMapSizeKey] = f"{new_map_size}"
-
-    noter = Noter()
-    assert noter.env.info()['map_size'] == new_map_size, "Expected map size to be set from environment variable to 10GB"
-    os.environ.pop(KERINoterMapSizeKey)
-
-    # generic map size works
-    baser_map_size = 10737418240
-    os.environ[KERIBaserMapSizeKey] = f"{baser_map_size}"
-
-    noter = Noter()
-    assert noter.env.info()['map_size'] == new_map_size, "Expected map size to be set from environment variable to 10GB"
-
-    # bad map size throws
-    os.environ[KERINoterMapSizeKey] = f"bad_map_size"
-    with pytest.raises(ValueError) as excinfo:
-        Noter()
-    assert "invalid literal for int" in str(excinfo.value), "Expected ValueError when map size is not an integer"
-    os.environ.pop(KERIBaserMapSizeKey)
-    os.environ.pop(KERINoterMapSizeKey)
+    noter = Noter(reopen=True,cf=cf)  # default is to not reopen
+    assert noter.mapSize == 1_073_741_824, "Map Size should be 1GB"  # 1024*1024*1024 = 1GB

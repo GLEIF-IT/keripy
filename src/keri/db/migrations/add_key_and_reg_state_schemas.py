@@ -20,7 +20,7 @@ def _check_if_needed(db):
         return False
     return True
 
-def migrate(db):
+def migrate(db, cf=None):
     """Adds schema for KeyStateRecord, RegStateRecord, and migrates the rgy.cancs., hby.db.pubs.,
     and hby.db.digs. to be up to date as of 2022-??-??
     This migration performs the following:
@@ -75,7 +75,7 @@ def migrate(db):
 
             nstates.pin(keys=keys, val=ksr)
 
-        rgy = viring.Reger(name=db.name, base=db.base, db=db, temp=db.temp, reopen=True)
+        rgy = viring.Reger(name=db.name, base=db.base, db=db, temp=db.temp, reopen=True, cf=cf)
 
         rstates = koming.Komer(db=rgy,
                                schema=dict,

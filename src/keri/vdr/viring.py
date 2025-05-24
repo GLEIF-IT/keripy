@@ -171,9 +171,6 @@ def openReger(name="test", **kwa):
     """
     return dbing.openLMDB(cls=Reger, name=name, **kwa)
 
-# Env var for configuring LMDB size for the Keeper database
-KERIRegerMapSizeKey = "KERI_REGER_MAP_SIZE"
-
 
 class Reger(dbing.LMDBer):
     """ Reger sets up named sub databases for TEL registry
@@ -242,6 +239,7 @@ class Reger(dbing.LMDBer):
     TailDirPath = "keri/reg"
     AltTailDirPath = ".keri/reg"
     TempPrefix = "keri_reg_"
+    ConfigKey = "reger"
 
     def __init__(self, headDirPath=None, reopen=True, **kwa):
         """
@@ -258,6 +256,7 @@ class Reger(dbing.LMDBer):
                 If not provided use default .HeadDirpath
             mode (int): numeric os dir permissions for database directory
             reopen (boolean,): IF True then database will be reopened by this init
+            cf (Configer): optional Configer to configure the opened LMDB database via kwa
 
         Notes:
 
@@ -280,17 +279,6 @@ class Reger(dbing.LMDBer):
         else:
             self._tevers = dict()
 
-        # support separate Reger size config yet fall back to baser size if not set
-        regerSize = os.getenv(KERIRegerMapSizeKey, None)
-        baserSize = os.getenv(KERIBaserMapSizeKey, None)
-        mapSize = regerSize if (regerSize is not None and regerSize != '') else baserSize
-        if mapSize:
-            try:
-                self.MapSize = int(mapSize)
-            except ValueError:
-                logger.error("KERI_REGER_MAP_SIZE and KERI_BASER_MAP_SIZE must be an integer value >1!")
-                raise
-
         super(Reger, self).__init__(headDirPath=headDirPath, reopen=reopen, **kwa)
 
 
@@ -309,6 +297,7 @@ class Reger(dbing.LMDBer):
 
         """
         super(Reger, self).reopen(**kwa)
+        logger.info("[%s] Reger map size set to %s", self.name, self.mapSize)
 
         # Create by opening first time named sub DBs within main DB instance
         # Names end with "." as sub DB name must include a non Base64 character

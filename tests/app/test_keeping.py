@@ -7,19 +7,14 @@ import pytest
 
 import os
 import stat
-import json
 from dataclasses import asdict
-from math import ceil
 
 import lmdb
-import pysodium
 
 from hio.base import doing
 
 from keri import kering
-from keri.app.keeping import Keeper, KERIKeeperMapSizeKey
-from keri.db.basing import KERIBaserMapSizeKey
-from keri.db.dbing import LMDBer
+from keri.app.keeping import Keeper
 from keri.help import helping
 
 from keri import core
@@ -27,7 +22,7 @@ from keri import core
 from keri.core import coring, indexing
 from keri.core.indexing import IdrDex
 
-from keri.app import keeping
+from keri.app import keeping, configing
 
 
 def test_dataclasses():
@@ -2000,41 +1995,19 @@ def test_manager_sign_dual_indices():
     assert not manager.ks.opened
     """End Test"""
 
-def test_keeper_db_size_set_from_env_var():
-    # Clear environment before test
-    if KERIBaserMapSizeKey in os.environ:
-        os.environ.pop(KERIBaserMapSizeKey)
-    if KERIKeeperMapSizeKey in os.environ:
-        os.environ.pop(KERIKeeperMapSizeKey)
 
-    new_map_size = 10737418240
+def test_keeper_config_with_file():
+    cf = configing.Configer()
+    configDict = dict(
+        keeper=dict(
+            mapSize="1_073_741_824"
+        )
+    )
+    cf.put(configDict)
 
-    # Default map size works
-    kpr = Keeper(reopen=True)
-    assert kpr.env.info()['map_size'] != new_map_size, "Expected map size to be the default 10MB"
-    assert kpr.env.info()['map_size'] == LMDBer.MapSize, "Expected map size to be the default 10MB"
+    keeper = Keeper(reopen=True,cf=cf)  # default is to not reopen
+    assert keeper.mapSize == 1_073_741_824, "Map Size should be 1GB"  # 1024*1024*1024 = 1GB
 
-    # Specific map size works
-    os.environ[KERIKeeperMapSizeKey] = f"{new_map_size}"
-
-    kpr = Keeper(reopen=True)
-    assert kpr.env.info()['map_size'] == new_map_size, "Expected map size to be set from environment variable to 10GB"
-    os.environ.pop(KERIKeeperMapSizeKey)
-
-    # generic map size works
-    baser_map_size = 10737418240
-    os.environ[KERIBaserMapSizeKey] = f"{baser_map_size}"
-
-    kpr = Keeper(reopen=True)
-    assert kpr.env.info()['map_size'] == new_map_size, "Expected map size to be set from environment variable to 10GB"
-
-    # Bad map size throws
-    os.environ[KERIKeeperMapSizeKey] = f"bad_map_size"
-    with pytest.raises(ValueError) as excinfo:
-        kpr = Keeper(reopen=True)
-    assert "invalid literal for int" in str(excinfo.value), "Expected ValueError when map size is not an integer"
-    os.environ.pop(KERIBaserMapSizeKey)
-    os.environ.pop(KERIKeeperMapSizeKey)
 
 if __name__ == "__main__":
     test_manager_sign_dual_indices()

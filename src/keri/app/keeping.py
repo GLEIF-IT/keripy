@@ -23,18 +23,15 @@ raw = json.dumps(ked, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 """
 import math
-import os
 from collections import namedtuple, deque
 from dataclasses import dataclass, asdict, field
 
 import pysodium
 from hio.base import doing
 
-from .. import kering
-from .. import core, help
+from .. import kering, core, help
 from ..core import coring
 from ..db import dbing, subing, koming
-from ..db.basing import KERIBaserMapSizeKey
 from ..help import helping
 
 logger = help.ogler.getLogger()
@@ -133,9 +130,6 @@ def openKS(name="test", **kwa):
     """
     return dbing.openLMDB(cls=Keeper, name=name, **kwa)
 
-# Env var for configuring LMDB size for the Keeper database
-KERIKeeperMapSizeKey = "KERI_KEEPER_MAP_SIZE"
-
 
 class Keeper(dbing.LMDBer):
     """
@@ -221,6 +215,7 @@ class Keeper(dbing.LMDBer):
     AltTailDirPath = ".keri/ks"
     TempPrefix = "keri_ks_"
     MaxNamedDBs = 10
+    ConfigKey = "keeper"
 
     def __init__(self, headDirPath=None, perm=None, reopen=False, **kwa):
         """
@@ -242,6 +237,7 @@ class Keeper(dbing.LMDBer):
                 default perm=None so do not set mode
             reopen is boolean, IF True then database will be reopened by this init
                 default reopen=True
+            cf (Configer): optional Configer to configure the opened LMDB database via kwa
 
         Notes:
 
@@ -259,16 +255,6 @@ class Keeper(dbing.LMDBer):
             perm = self.Perm  # defaults to restricted permissions for non temp
 
         # support separate Keeper size config yet fall back to baser size if not set
-        keeperSize = os.getenv(KERIKeeperMapSizeKey, None)
-        baserSize = os.getenv(KERIBaserMapSizeKey, None)
-        mapSize = keeperSize if (keeperSize is not None and keeperSize != '') else baserSize
-        if mapSize:
-            try:
-                self.MapSize = int(mapSize)
-            except ValueError:
-                logger.error("KERI_KEEPER_MAP_SIZE and KERI_BASER_MAP_SIZE must be an integer value >1!")
-                raise
-
         super(Keeper, self).__init__(headDirPath=headDirPath, perm=perm,
                                      reopen=reopen, **kwa)
 
@@ -277,6 +263,7 @@ class Keeper(dbing.LMDBer):
         Open sub databases
         """
         opened = super(Keeper, self).reopen(**kwa)
+        logger.info("[%s] Keeper map size set to %s", self.name, self.mapSize)
 
         # Create by opening first time named sub DBs within main DB instance
         # Names end with "." as sub DB name must include a non Base64 character

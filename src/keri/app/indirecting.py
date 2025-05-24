@@ -50,10 +50,10 @@ def setupWitness(hby, alias="witness", mbx=None, aids=None, tcpPort=5631, httpPo
     if hab is None:
         hab = hby.makeHab(name=alias, transferable=False)
 
-    reger = viring.Reger(name=hab.name, db=hab.db, temp=False)
+    reger = viring.Reger(name=hab.name, db=hab.db, temp=False, cf=hby.cf)
     verfer = verifying.Verifier(hby=hby, reger=reger)
 
-    mbx = mbx if mbx is not None else storing.Mailboxer(name=alias, temp=hby.temp)
+    mbx = mbx if mbx is not None else storing.Mailboxer(name=alias, temp=hby.temp, cf=hby.cf)
     forwarder = forwarding.ForwardHandler(hby=hby, mbx=mbx)
     exchanger = exchanging.Exchanger(hby=hby, handlers=[forwarder])
     clienter = httping.Clienter()
@@ -1192,7 +1192,7 @@ class QueryEnd:
 
     def __init__(self, hab):
         self.hab = hab
-        self.reger = viring.Reger(name=hab.name, db=hab.db, temp=False)
+        self.reger = viring.Reger(name=hab.name, db=hab.db, temp=False, cf=hab.cf)
    
     def on_get(self, req, rep):
         """ Handles GET requests to query KEL or TEL events of a pre from a witness.

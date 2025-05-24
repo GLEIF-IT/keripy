@@ -8,7 +8,6 @@ from collections.abc import Iterable
 from typing import Union, Type
 
 from keri import kering, help
-from keri.db.basing import KERIBaserMapSizeKey
 from keri.help import helping
 from keri.app import signaling
 from keri.core import coring
@@ -201,9 +200,6 @@ class DicterSuber(subing.Suber):
         """
         return self.db.cnt(db=self.sdb)
 
-# Env var for configuring LMDB size for the Noter database
-KERINoterMapSizeKey = "KERI_NOTER_MAP_SIZE"
-
 
 class Noter(dbing.LMDBer):
     """
@@ -214,40 +210,35 @@ class Noter(dbing.LMDBer):
     TailDirPath = "keri/not"
     AltTailDirPath = ".keri/not"
     TempPrefix = "keri_not_"
+    ConfigKey = "noter"
 
     def __init__(self, name="not", headDirPath=None, reopen=True, **kwa):
         """
+        Sets up a named notification database where all notifications for a controller are stored.
 
         Parameters:
-            headDirPath:
-            perm:
-            reopen:
-            kwa:
+            headDirPath(str): optional str head directory pathname for main database
+                If not provided use default .HeadDirpath
+            perm(int): is numeric os permissions for directory and/or file(s)
+            reopen(bool): True means database will be reopened by this init
+            cf (Configer): optional Configer to configure the opened LMDB database via kwa
+            kwa: pass through init args to reopen and LMDBer
         """
         self.notes = None
         self.nidx = None
         self.ncigs = None
 
-        # support separate mailbox size config yet fall back to baser size if not set
-        noterSize = os.getenv(KERINoterMapSizeKey, None)
-        baserSize = os.getenv(KERIBaserMapSizeKey, None)
-        mapSize = noterSize if (noterSize is not None and noterSize != '') else baserSize
-        if mapSize:
-            try:
-                self.MapSize = int(mapSize)
-            except ValueError:
-                logger.error("KERI_NOTER_MAP_SIZE and KERI_BASER_MAP_SIZE must be an integer value >1!")
-                raise
-
         super(Noter, self).__init__(name=name, headDirPath=headDirPath, reopen=reopen, **kwa)
 
     def reopen(self, **kwa):
         """
+        Sets up specific named LMDB sub databases to be opened.
 
-        :param kwa:
+        :param kwa: pass through init args to reopen and LMDBer
         :return:
         """
         super(Noter, self).reopen(**kwa)
+        logger.info("[%s] Noter map size set to %s", self.name, self.mapSize)
 
         self.notes = DicterSuber(db=self, subkey='nots.', sep='/', klas=Notice)
         self.nidx = subing.Suber(db=self, subkey='nidx.')
@@ -391,7 +382,7 @@ class Notifier:
         """
         self.hby = hby
         self.signaler = signaler if signaler is not None else signaling.Signaler()
-        self.noter = noter if noter is not None else Noter(name=hby.name, temp=hby.temp)
+        self.noter = noter if noter is not None else Noter(name=hby.name, temp=hby.temp, cf=hby.cf)
 
     def add(self, attrs):
         """  Add unread notice to the end of the current list of notices

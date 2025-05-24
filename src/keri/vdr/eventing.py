@@ -693,7 +693,7 @@ class Tever:
         if not (rsr or serder):
             raise ValueError("Missing required arguments. Need state or serder")
 
-        self.reger = reger if reger is not None else viring.Reger()
+        self.reger = reger if reger is not None else viring.Reger(cf=db.cf if db else None)
         self.cues = cues if cues is not None else decking.Deck()
 
         self.db = db if db is not None else basing.Baser(reopen=True)
@@ -1482,7 +1482,7 @@ class Tevery:
         """
         self.db = db if db is not None else basing.Baser(reopen=True)  # default name = "main"
         self.rvy = rvy
-        self.reger = reger if reger is not None else viring.Reger()
+        self.reger = reger if reger is not None else viring.Reger(cf=db.cf if db else None)
         self.local = True if local else False  # local vs nonlocal restrictions
         self.lax = True if lax else False
         self.cues = cues if cues is not None else decking.Deck()

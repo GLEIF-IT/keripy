@@ -51,5 +51,5 @@ def clear(tymth, tock=0.0, **opts):
 
     with existing.existingHby(name=name, base=base, bran=bran) as hby:
         hby.db.clearEscrows()
-        reger = viring.Reger(name=hby.name, db=hby.db, temp=False)
+        reger = viring.Reger(name=hby.name, db=hby.db, temp=False, cf=hby.cf)
         reger.clearEscrows()

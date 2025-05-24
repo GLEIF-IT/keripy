@@ -8,13 +8,13 @@ import os
 import lmdb
 import pytest
 
-from keri.app import keeping
+from keri.app import keeping, configing
 from keri.core import coring, serdering
 from keri.db import dbing, basing, subing
 from keri.db.basing import KERIBaserMapSizeKey
 from keri.db.dbing import LMDBer
 from keri.peer import exchanging
-from keri.app.storing import Mailboxer, KERIMailboxerMapSizeKey
+from keri.app.storing import Mailboxer
 
 
 def test_mailboxing():
@@ -112,40 +112,18 @@ def test_mailboxing():
         #assert(len(msgs)) == 6
         #assert msgs[0][0] == 4
 
-def test_mailbox_db_size_set_from_env_var():
-    # Clear environment before test
-    if KERIBaserMapSizeKey in os.environ:
-        os.environ.pop(KERIBaserMapSizeKey)
-    if KERIMailboxerMapSizeKey in os.environ:
-        os.environ.pop(KERIMailboxerMapSizeKey)
 
-    new_map_size = 10737418240
-    # Default map size works
-    mber = Mailboxer()
-    assert mber.env.info()['map_size'] != new_map_size, "Expected map size to be the default 10MB"
-    assert mber.env.info()['map_size'] == LMDBer.MapSize, "Expected map size to be the default 10MB"
+def test_mailboxer_config_with_file():
+    cf = configing.Configer()
+    configDict = dict(
+        mailboxer=dict(
+            mapSize="1_073_741_824"
+        )
+    )
+    cf.put(configDict)
 
-    # Specific map size works
-    os.environ[KERIMailboxerMapSizeKey] = f"{new_map_size}"
-
-    mber = Mailboxer()
-    assert mber.env.info()['map_size'] == new_map_size, "Expected map size to be set from environment variable to 10GB"
-    os.environ.pop(KERIMailboxerMapSizeKey)
-
-    # generic map size works
-    baser_map_size = 10737418240
-    os.environ[KERIBaserMapSizeKey] = f"{baser_map_size}"
-
-    mber = Mailboxer()
-    assert mber.env.info()['map_size'] == new_map_size, "Expected map size to be set from environment variable to 10GB"
-
-    # Bad map size throws
-    os.environ[KERIMailboxerMapSizeKey] = f"bad_map_size"
-    with pytest.raises(ValueError) as excinfo:
-        Mailboxer()
-    assert "invalid literal for int" in str(excinfo.value), "Expected ValueError when map size is not an integer"
-    os.environ.pop(KERIBaserMapSizeKey)
-    os.environ.pop(KERIMailboxerMapSizeKey)
+    mailboxer = Mailboxer(reopen=True,cf=cf)  # default is to not reopen
+    assert mailboxer.mapSize == 1_073_741_824, "Map Size should be 1GB"  # 1024*1024*1024 = 1GB
 
 if __name__ == '__main__':
     test_mailboxing()
