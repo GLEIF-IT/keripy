@@ -164,6 +164,24 @@ PID_LIST+=" $pid"
 
 wait $PID_LIST
 
+kli vc export --name multisig1 --full --alias multisig > credentials.cesr
+
+kli import --name multisig3 --file credentials.cesr
+
+echo "****************************"
+echo "****************************"
+echo "****************************"
+echo "****************************"
+echo "****************************"
+echo "****************************"
+echo "****************************"
+
+kli vc registry rename --name multisig3 --registry-name vLEI --registry-said "EPcJecfM-anKxmkTaMB890ea5MpLGwCz5-eZ830Sp2f6"
+
+kli vc registry list --name multisig1
+kli vc registry list --name multisig3
+
+#kli vc list --name multisig3 --alias multisig --verbose --issued
 #kli status --name multisig1 --alias multisig
 
 #echo "Revoking ${SAID}..."

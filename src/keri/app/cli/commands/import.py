@@ -12,6 +12,8 @@ from hio.base import doing
 from keri.app import habbing
 from keri.app.cli.common import existing
 from keri.core import parsing
+from keri.vdr import credentialing
+from keri.vdr import eventing as teventing
 
 logger = help.ogler.getLogger()
 
@@ -41,9 +43,12 @@ def imprt(args):
 class ImportDoer(doing.DoDoer):
 
     def __init__(self, name, base, bran, file):
+        self.name = name
+        self.base = base
         self.file = file
 
         self.hby = existing.setupHby(name=name, base=base, bran=bran)
+        self.rgy = credentialing.Regery(hby=self.hby, name=self.name, base=self.base)
 
         doers = [doing.doify(self.importDo), habbing.HaberyDoer(self.hby)]
 
@@ -67,8 +72,7 @@ class ImportDoer(doing.DoDoer):
 
         with open(self.file, 'rb') as f:
             ims = f.read()
-            print(self.hby.rvy)
-            parsing.Parser(kvy=self.hby.kvy, rvy=self.hby.rvy, local=False).parse(ims=ims)
+            parsing.Parser(kvy=self.hby.kvy, rvy=self.hby.rvy, tvy=self.rgy.tvy, local=False).parse(ims=ims)
             self.hby.kvy.processEscrows()
 
         self.exit()

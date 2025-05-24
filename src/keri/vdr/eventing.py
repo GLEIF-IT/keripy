@@ -1549,7 +1549,9 @@ class Tevery:
                                      "".format(regk))
 
         if regk not in self.tevers:  # first seen for this registry
+            print("not in tevers", self.tevers)
             if ilk in [Ilks.vcp]:
+                print("incepting a new registry, Tever create will validate anchor, etc.")
                 # incepting a new registry, Tever create will validate anchor, etc.
                 tever = Tever(serder=serder,
                               seqner=seqner,
@@ -1560,6 +1562,7 @@ class Tevery:
                               regk=regk,
                               local=self.local,
                               cues=self.cues)
+                print(f"regk {regk} tever {tever}")
                 self.tevers[regk] = tever
                 if regk not in self.registries:
                     # witness style backers will need to send receipts so lets queue them up for now

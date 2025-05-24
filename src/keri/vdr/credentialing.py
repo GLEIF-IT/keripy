@@ -77,15 +77,18 @@ class Regery:
             self.reger.registries.add(regk)
 
     def makeRegistry(self, name, prefix, **kwa):
+        print(f"name={name} prefix={prefix} kwa={kwa}")
         hab = self.hby.habs[prefix]
         if hab is None:
             raise kering.ConfigurationError(f"Unknown prefix {prefix} for creating Registry {name}")
 
         reg = Registry(hab=hab, name=name, reger=self.reger, tvy=self.tvy, psr=self.psr, cues=self.cues)
+        if reg is None:
+            print("failed to create registry")
 
         reg.make(**kwa)
         self.regs[reg.regk] = reg
-
+        print("returning registry", reg)
         return reg
 
     def makeSignifyRegistry(self, name, prefix, regser):
@@ -279,7 +282,6 @@ class Registry(BaseRegistry):
 
         """
         pre = self.hab.pre
-
         if vcp is None:
             baks = baks if baks is not None else []
 
@@ -299,10 +301,13 @@ class Registry(BaseRegistry):
         self.regk = self.vcp.pre
         self.regd = self.vcp.said
         self.registries.add(self.regk)
+        print("adding registry", self.regk)
         self.reger.regs.put(keys=self.name,
                             val=viring.RegistryRecord(registryKey=self.regk, prefix=pre))
+        print("putting registry", self.name)
 
         self.processEvent(serder=self.vcp)
+        print("initializing registry")
         self.inited = True
 
     def rotate(self, toad=None, cuts=None, adds=None):
