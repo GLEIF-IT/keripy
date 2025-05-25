@@ -31,7 +31,7 @@ parser.add_argument('--base', '-b', help='additional optional prefix to file loc
                     required=False, default="")
 parser.add_argument('--passcode', '-p', help='21 character encryption passcode for keystore (is not saved)',
                     dest="bran", default=None)  # passcode => bran
-
+parser.add_argument("--group", "-g", help="yup", action="store_true")
 parser.add_argument("--verbose", "-V", help="print full JSON of all credentials", action="store_true")
 parser.add_argument("--poll", "-P", help="Poll mailboxes for any issued credentials", action="store_true")
 parser.add_argument("--issued", "-i", help="Display credentials that this AID has issued.",
@@ -108,10 +108,12 @@ class ListDoer(doing.DoDoer):
                 yield 1.0
             print("\n")
 
-        if self.issued:
-            saids = self.rgy.reger.issus.get(keys=self.hab.pre)
-        else:
-            saids = self.rgy.reger.subjs.get(keys=self.hab.pre)
+        # if self.issued:
+        #     saids = self.rgy.reger.issus.get(keys=self.hab.pre)
+        # else:
+        #     saids = self.rgy.reger.subjs.get(keys=self.hab.pre)
+
+        saids = self.rgy.reger.issus.get(keys="EC61gZ9lCKmHAS7U5ehUfEbGId5rcY0D7MirFZHDQcE2")
 
         if self.schema is not None:
             scads = self.rgy.reger.schms.get(keys=self.schema)

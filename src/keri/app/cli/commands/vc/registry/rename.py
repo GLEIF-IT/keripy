@@ -92,9 +92,9 @@ class RegistryRenamer(doing.DoDoer):
         if registry is None:
             if self.registrySAID in self.rgy.regs:
                 registry = self.rgy.regs[self.registrySAID]
+                regk = registry.regk
             else:
-                key = dgKey(self.registrySAID, self.registrySAID)
-                raw = self.rgy.reger.getTvt(key=key)
+                raw = self.rgy.reger.getTvt(key=dgKey(self.registrySAID, self.registrySAID))
                 if raw is None:
                     print(f"{self.registrySAID} is not a valid reference to a credential registry")
                     return
@@ -104,13 +104,11 @@ class RegistryRenamer(doing.DoDoer):
                     registry = self.rgy.makeRegistry(name=self.registrySAID, prefix=self.hab.pre, vcp=regser)
                 except LikelyDuplicitousError as e:
                     print(f"Ignoring error: {e} for registry {self.registrySAID} {registry}")
+                regk = self.registrySAID
+        else:
+            regk = self.registrySAID
 
-        print("registryName", self.name, self.rgy.registryByName(self.name))
-        print("registryName", self.registryName, self.rgy.registryByName(self.registryName))
-        print("registryName", self.registrySAID, self.rgy.registryByName(self.registrySAID))
-
-        print("registry name", self.registryName)
-        regord = viring.RegistryRecord(registryKey=registry.regk, prefix=self.hab.pre)
+        regord = viring.RegistryRecord(registryKey=regk, prefix=self.hab.pre)
         self.rgy.reger.regs.pin(keys=(self.registryName,), val=regord)
         self.rgy.reger.regs.rem(keys=(self.name,))
 
