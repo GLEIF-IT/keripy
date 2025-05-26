@@ -7,15 +7,15 @@ message stream parsing support
 
 import logging
 
-from ..kering import Vrsn_1_0, Vrsn_2_0
+from ..kering import Vrsn_1_0
 from .coring import (Ilks, Seqner, Cigar,
                      Dater, Verfer, Prefixer, Saider, Pather, Matter)
-from .counting import Counter, Codens, CtrDex_1_0
+from .counting import Counter, CtrDex_1_0
 from .indexing import (Siger, )
 from . import serdering
 from .. import help
 from .. import kering
-from ..kering import Colds, sniff, Vrsn_1_0, Vrsn_2_0
+from ..kering import Colds, sniff
 
 logger = help.ogler.getLogger()
 
@@ -125,7 +125,7 @@ class Parser:
                     return klas(qb2=ims, strip=True, gvrsn=gvrsn)
                 else:
                     raise kering.ColdStartError("Invalid stream state cold={}.".format(cold))
-            except kering.ShortageError as ex:
+            except kering.ShortageError:
                 if abort:  # pipelined pre-collects full frame before extracting
                     raise  # bad pipelined frame so abort by raising error
                 yield
@@ -455,6 +455,7 @@ class Parser:
                 del ims[:]  # delete rest of stream to force cold restart
 
             except (kering.ValidationError, Exception) as ex:  # non Extraction Error
+                print("2", ex)
                 # Non extraction errors happen after successfully extracted from stream
                 # so we don't flush rest of stream just resume
                 if logger.isEnabledFor(logging.TRACE):
@@ -540,6 +541,7 @@ class Parser:
                 del ims[:]  # delete rest of stream to force cold restart
 
             except (kering.ValidationError, Exception) as ex:  # non Extraction Error
+                print("3", ex)
                 # Non extraction errors happen after successfully extracted from stream
                 # so we don't flush rest of stream just resume
                 if logger.isEnabledFor(logging.DEBUG):
@@ -632,6 +634,7 @@ class Parser:
             except (kering.ValidationError, Exception) as ex:  # non Extraction Error
                 # Non extraction errors happen after successfully extracted from stream
                 # so we don't flush rest of stream just resume
+                print("1", ex)
                 if logger.isEnabledFor(logging.TRACE):
                     logger.exception("Parser msg non-extraction error: %s", ex.args[0])
                 if logger.isEnabledFor(logging.DEBUG):
@@ -713,7 +716,7 @@ class Parser:
         while True:  # extract, deserialize, and strip message from ims
             try:
                 serder = serdery.reap(ims=ims)  # can set version here
-            except kering.ShortageError as ex:  # need more bytes
+            except kering.ShortageError:  # need more bytes
                 yield
             else: # extracted and stripped successfully
                 break  # break out of while loop
@@ -993,7 +996,7 @@ class Parser:
 
                     ctr = yield from self._extractor(ims=ims, klas=Counter, cold=cold)
 
-        except kering.ExtractionError as ex:
+        except kering.ExtractionError:
             if pipelined:  # extracted pipelined group is preflushed
                 raise kering.SizedGroupError("Error processing pipelined size"
                                              "attachment group of size={}.".format(pags))
@@ -1145,7 +1148,7 @@ class Parser:
                 try:
                     tvy.processEvent(serder=serder, seqner=seqner, saider=saider, wigers=wigers)
 
-                except AttributeError as e:
+                except AttributeError:
                     raise kering.ValidationError("No tevery to process so dropped msg"
                                                  "= {}.".format(serder.pretty()))
             else:
@@ -1159,7 +1162,7 @@ class Parser:
                 try:
                     prefixer, seqner, saider = ssts[-1] if ssts else (None, None, None)  # use last one if more than one
                     vry.processCredential(creder=serder, prefixer=prefixer, seqner=seqner, saider=saider)
-                except AttributeError as e:
+                except AttributeError:
                     raise kering.ValidationError("No verifier to process so dropped credential"
                                                  "= {}.".format(serder.pretty()))
             else:

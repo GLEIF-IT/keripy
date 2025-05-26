@@ -170,30 +170,26 @@ kli oobi resolve --name multisig3 --oobi-alias multisig --oobi http://127.0.0.1:
 
 kli multisig join --name multisig3 --auto --group multisig
 
-kli vc export --name multisig1 --full --alias multisig > credentials.cesr
+kli vc export --name multisig1 --full --alias multisig > data/multigsig-rotate-in-and-revoke.cesr
 
-kli import --name multisig3 --file credentials.cesr
+kli import --name multisig3 --file data/multigsig-rotate-in-and-revoke.cesr
 
 kli vc registry rename --name multisig3 --registry-name vLEI --registry-said "EPcJecfM-anKxmkTaMB890ea5MpLGwCz5-eZ830Sp2f6"
 
+kli oobi resolve --name multisig3 --oobi-alias holder --oobi http://127.0.0.1:5642/oobi/ELjSFdrTdCebJlmvbFNX9-TLhR2PO0_60al1kQp5_e6k/witness
+
+echo "Revoking ${SAID}..."
+TIME=$(date -Iseconds -u)
+kli vc revoke --name multisig1 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
+pid=$!
+PID_LIST=" $pid"
+
+kli vc revoke --name multisig2 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
+pid=$!
+PID_LIST+=" $pid"
+
+wait $PID_LIST
+kli vc list --name holder --alias holder --poll
+
 echo "List multisig1 credentials..."
 kli vc list --name multisig1 --alias multisig --verbose --issued
-
-echo "List multisig3 credentials..."
-kli vc list --name multisig3 --alias multisig --verbose --issued
-
-#kli status --name multisig1 --alias multisig
-
-#echo "Revoking ${SAID}..."
-#TIME=$(date -Iseconds -u)
-#kli vc revoke --name multisig1 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
-#pid=$!
-#PID_LIST=" $pid"
-#
-#kli vc revoke --name multisig2 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
-#pid=$!
-#PID_LIST+=" $pid"
-#
-#
-#wait $PID_LIST
-#kli vc list --name holder --alias holder --poll

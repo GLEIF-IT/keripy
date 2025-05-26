@@ -13,6 +13,7 @@ from keri.app import habbing
 from keri.app.cli.common import existing
 from keri.core import parsing
 from keri.vdr import credentialing, verifying
+from keri.vdr import eventing as teventing
 
 logger = help.ogler.getLogger()
 
@@ -49,6 +50,7 @@ class ImportDoer(doing.DoDoer):
         self.hby = existing.setupHby(name=name, base=base, bran=bran)
         self.rgy = credentialing.Regery(hby=self.hby, name=self.name, base=self.base)
         self.vry = verifying.Verifier(hby=self.hby, reger=self.rgy.reger)
+        self.tvy = teventing.Tevery(db=self.hby.db, reger=self.rgy.reger)
         doers = [doing.doify(self.importDo), habbing.HaberyDoer(self.hby)]
 
         super(ImportDoer, self).__init__(doers=doers)
@@ -71,7 +73,7 @@ class ImportDoer(doing.DoDoer):
 
         with open(self.file, 'rb') as f:
             ims = f.read()
-            parsing.Parser(kvy=self.hby.kvy, rvy=self.hby.rvy, tvy=self.rgy.tvy, vry=self.vry, local=False).parse(ims=ims)
+            parsing.Parser(kvy=self.hby.kvy, rvy=self.hby.rvy, tvy=self.tvy, vry=self.vry, local=False).parse(ims=ims)
             self.hby.kvy.processEscrows()
 
         self.exit()
