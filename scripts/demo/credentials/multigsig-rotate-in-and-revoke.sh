@@ -184,12 +184,12 @@ kli vc revoke --name multisig1 --alias multisig --registry-name vLEI --said "${S
 pid=$!
 PID_LIST=" $pid"
 
-kli vc revoke --name multisig2 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
+kli vc revoke --name multisig3 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
 pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
-kli vc list --name holder --alias holder --poll
-
-echo "List multisig1 credentials..."
-kli vc list --name multisig1 --alias multisig --verbose --issued
+#kli vc list --name holder --alias holder --poll
+#
+#echo "List multisig1 credentials..."
+#kli vc list --name multisig1 --alias multisig --verbose --issued
