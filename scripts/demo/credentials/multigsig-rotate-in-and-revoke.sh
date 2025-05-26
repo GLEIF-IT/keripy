@@ -124,6 +124,8 @@ kli oobi resolve --name multisig3 --oobi-alias multisig1 --oobi http://127.0.0.1
 kli oobi resolve --name multisig1 --oobi-alias multisig3 --oobi http://127.0.0.1:5642/oobi/ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U/witness
 kli oobi resolve --name multisig2 --oobi-alias multisig3 --oobi http://127.0.0.1:5642/oobi/ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U/witness
 
+kli oobi resolve --name multisig3 --oobi-alias vc --oobi http://127.0.0.1:7723/oobi/EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao
+
 kli rotate --name multisig1 --alias multisig1
 kli rotate --name multisig2 --alias multisig2
 kli rotate --name multisig3 --alias multisig3
