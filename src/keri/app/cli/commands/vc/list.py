@@ -108,12 +108,10 @@ class ListDoer(doing.DoDoer):
                 yield 1.0
             print("\n")
 
-        # if self.issued:
-        #     saids = self.rgy.reger.issus.get(keys=self.hab.pre)
-        # else:
-        #     saids = self.rgy.reger.subjs.get(keys=self.hab.pre)
-
-        saids = self.rgy.reger.issus.get(keys="EC61gZ9lCKmHAS7U5ehUfEbGId5rcY0D7MirFZHDQcE2")
+        if self.issued:
+            saids = self.rgy.reger.issus.get(keys=self.hab.pre)
+        else:
+            saids = self.rgy.reger.subjs.get(keys=self.hab.pre)
 
         if self.schema is not None:
             scads = self.rgy.reger.schms.get(keys=self.schema)
