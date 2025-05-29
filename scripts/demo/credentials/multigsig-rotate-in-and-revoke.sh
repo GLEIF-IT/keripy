@@ -51,6 +51,7 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
 
 # Create a credential registry owned by the multisig issuer
 kli vc registry incept --name multisig1 --alias multisig --registry-name vLEI --usage "Issue vLEIs" --nonce AHSNDV3ABI6U8OIgKaj3aky91ZpNL54I5_7-qwtC6q2s &
@@ -62,6 +63,7 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
 
 ## Rotate multisig keys:
 kli rotate --name multisig1 --alias multisig1
@@ -78,6 +80,7 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
 
 # Issue Credential
 TIME=$(date -Iseconds -u)
@@ -90,6 +93,7 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
 
 SAID=$(kli vc list --name multisig1 --alias multisig --issued --said)
 
@@ -104,6 +108,7 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
 
 echo "Polling for holder's IPEX message..."
 SAID=$(kli ipex list --name holder --alias holder --poll --said)
@@ -113,7 +118,7 @@ kli ipex admit --name holder --alias holder --said "${SAID}" --time "${TIME}"
 
 kli vc list --name holder --alias holder --poll
 
-SAID=$(kli vc list --name holder --alias holder --said --schema EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao)
+SAID=$(kli vc list --name multisig1 --alias multisig --issued --said)
 
 kli init --name multisig3 --salt 0ACDEyMzQ1Njc4OWdoaWpsaw --nopasscode --config-dir ${KERI_SCRIPT_DIR} --config-file demo-witness-oobis
 kli incept --name multisig3 --alias multisig3 --file ${KERI_DEMO_SCRIPT_DIR}/data/multisig-3-sample.json
@@ -165,31 +170,38 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
 
 kli oobi resolve --name multisig3 --oobi-alias multisig --oobi http://127.0.0.1:5642/oobi/EC61gZ9lCKmHAS7U5ehUfEbGId5rcY0D7MirFZHDQcE2/witness
 
 kli multisig join --name multisig3 --auto --group multisig
-
-kli vc export --name multisig1 --full --alias multisig > data/multigsig-rotate-in-and-revoke.cesr
-
-kli import --name multisig3 --file data/multigsig-rotate-in-and-revoke.cesr
-
-kli vc registry rename --name multisig3 --registry-name vLEI --registry-said "EPcJecfM-anKxmkTaMB890ea5MpLGwCz5-eZ830Sp2f6"
-
-kli oobi resolve --name multisig3 --oobi-alias holder --oobi http://127.0.0.1:5642/oobi/ELjSFdrTdCebJlmvbFNX9-TLhR2PO0_60al1kQp5_e6k/witness
-
-echo "Revoking ${SAID}..."
-TIME=$(date -Iseconds -u)
-kli vc revoke --name multisig1 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
-pid=$!
-PID_LIST=" $pid"
-
-kli vc revoke --name multisig3 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
-pid=$!
-PID_LIST+=" $pid"
-
-wait $PID_LIST
-#kli vc list --name holder --alias holder --poll
 #
-#echo "List multisig1 credentials..."
-#kli vc list --name multisig1 --alias multisig --verbose --issued
+#kli local watch --name multisig3
+#
+#kli vc export --name multisig1 --full --alias multisig > data/multigsig-rotate-in-and-revoke.cesr
+#
+#kli import --name multisig3 --file data/multigsig-rotate-in-and-revoke.cesr
+#
+#kli vc registry rename --name multisig3 --registry-name vLEI --registry-said "EPcJecfM-anKxmkTaMB890ea5MpLGwCz5-eZ830Sp2f6"
+#
+kli oobi resolve --name multisig3 --oobi-alias holder --oobi http://127.0.0.1:5642/oobi/ELjSFdrTdCebJlmvbFNX9-TLhR2PO0_60al1kQp5_e6k/witness
+#
+kli vc list --name multisig3 --alias multisig --verbose --issued
+#
+#SAID=$(kli vc list --name multisig1 --alias multisig --issued --said)
+#echo "Revoking ${SAID}..."
+#TIME=$(date -Iseconds -u)
+#kli vc revoke --name multisig1 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
+#pid=$!
+#PID_LIST=" $pid"
+#
+#kli vc revoke --name multisig3 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
+#pid=$!
+#PID_LIST+=" $pid"
+#
+#wait $PID_LIST
+
+#kli vc list --name holder --alias holder --poll
+##
+##echo "List multisig1 credentials..."
+##kli vc list --name multisig1 --alias multisig --verbose --issued

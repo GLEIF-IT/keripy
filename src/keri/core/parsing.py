@@ -6,7 +6,6 @@ message stream parsing support
 """
 
 import logging
-import traceback
 
 from ..kering import Vrsn_1_0
 from .coring import (Ilks, Seqner, Cigar,
@@ -635,7 +634,6 @@ class Parser:
             except (kering.ValidationError, Exception) as ex:  # non Extraction Error
                 # Non extraction errors happen after successfully extracted from stream
                 # so we don't flush rest of stream just resume
-                print("1", ex)
                 if logger.isEnabledFor(logging.TRACE):
                     logger.exception("Parser msg non-extraction error: %s", ex.args[0])
                 if logger.isEnabledFor(logging.DEBUG):
@@ -1033,8 +1031,6 @@ class Parser:
                                                              firner=firner, local=local)
 
                 except AttributeError as ex:
-                    traceback.print_stack()
-                    print("is bad", ex)
                     msg = f"1 No kevery to process so dropped msg={serder.said}"
                     logger.info(msg)
                     logger.debug("Event Body = \n%s\n", serder.pretty())

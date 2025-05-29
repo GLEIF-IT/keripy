@@ -14,6 +14,7 @@ from keri.app import agenting, indirecting, habbing, forwarding
 from keri.app.cli.common import existing, terming
 from keri.app.habbing import GroupHab
 from keri.app.watching import States, diffState
+from hio.help import decking
 
 logger = help.ogler.getLogger()
 
@@ -44,7 +45,7 @@ class WatchDoer(doing.DoDoer):
         doers = []
         self.hby = existing.setupHby(name=name, base=base, bran=bran)
         self.hbyDoer = habbing.HaberyDoer(habery=self.hby)  # setup doer
-        self.cues = help.decking.Deck()
+        self.cues = decking.Deck()
 
         self.mbd = indirecting.MailboxDirector(hby=self.hby, topics=["/replay", "/receipt", "/reply"])
         self.postman = forwarding.Poster(hby=self.hby)
