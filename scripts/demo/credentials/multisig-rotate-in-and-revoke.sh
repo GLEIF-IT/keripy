@@ -120,63 +120,61 @@ kli vc list --name holder --alias holder --poll
 
 SAID=$(kli vc list --name multisig1 --alias multisig --issued --said)
 
-kli init --name multisig3 --salt 0ACDEyMzQ1Njc4OWdoaWpsaw --nopasscode --config-dir ${KERI_SCRIPT_DIR} --config-file demo-witness-oobis
-kli incept --name multisig3 --alias multisig3 --file ${KERI_DEMO_SCRIPT_DIR}/data/multisig-3-sample.json
-
-kli oobi resolve --name multisig3 --oobi-alias multisig2 --oobi http://127.0.0.1:5642/oobi/EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1/witness
-kli oobi resolve --name multisig3 --oobi-alias multisig1 --oobi http://127.0.0.1:5642/oobi/EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4/witness
-
-kli oobi resolve --name multisig1 --oobi-alias multisig3 --oobi http://127.0.0.1:5642/oobi/ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U/witness
-kli oobi resolve --name multisig2 --oobi-alias multisig3 --oobi http://127.0.0.1:5642/oobi/ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U/witness
-
-kli oobi resolve --name multisig3 --oobi-alias vc --oobi http://127.0.0.1:7723/oobi/EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao
-
-kli rotate --name multisig1 --alias multisig1
-kli rotate --name multisig2 --alias multisig2
-kli rotate --name multisig3 --alias multisig3
-
-kli query --name multisig1 --alias multisig1 --prefix EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1 # 1 queries 2
-kli query --name multisig1 --alias multisig1 --prefix ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U # 1 queries 3
-
-kli query --name multisig2 --alias multisig2 --prefix EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4 # 2 queries 1
-kli query --name multisig2 --alias multisig2 --prefix ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U # 2 queries 3
-
-kli query --name multisig3 --alias multisig3 --prefix EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4 # 3 queries 1
-kli query --name multisig3 --alias multisig3 --prefix EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1 # 3 queries 2
-
-## Perform rotation of mulisig AID from local kli AIDs that roll themselves out and the new AIDs in
-kli multisig rotate --name multisig1 --alias multisig \
-         --smids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:2 \
-         --smids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:2 \
-         --smids ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U:1 \
-         --isith '["1/2", "1/2", "1/2"]' \
-         --rmids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:2 \
-         --rmids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:2 \
-         --rmids ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U:1 \
-         --nsith '["1/2", "1/2", "1/2"]' &
-pid=$!
-PID_LIST="$pid"
-
-kli multisig rotate --name multisig2 --alias multisig \
-         --smids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:2 \
-         --smids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:2 \
-         --smids ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U:1 \
-         --isith '["1/2", "1/2", "1/2"]' \
-         --rmids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:2 \
-         --rmids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:2 \
-         --rmids ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U:1 \
-         --nsith '["1/2", "1/2", "1/2"]' &
-pid=$!
-PID_LIST+=" $pid"
-
-wait $PID_LIST
-PID_LIST=""
-
-kli oobi resolve --name multisig3 --oobi-alias multisig --oobi http://127.0.0.1:5642/oobi/EC61gZ9lCKmHAS7U5ehUfEbGId5rcY0D7MirFZHDQcE2/witness
-
-kli multisig join --name multisig3 --auto --group multisig
+#kli init --name multisig3 --salt 0ACDEyMzQ1Njc4OWdoaWpsaw --nopasscode --config-dir ${KERI_SCRIPT_DIR} --config-file demo-witness-oobis
+#kli incept --name multisig3 --alias multisig3 --file ${KERI_DEMO_SCRIPT_DIR}/data/multisig-3-sample.json
 #
-#kli local watch --name multisig3
+#kli oobi resolve --name multisig3 --oobi-alias multisig2 --oobi http://127.0.0.1:5642/oobi/EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1/witness
+#kli oobi resolve --name multisig3 --oobi-alias multisig1 --oobi http://127.0.0.1:5642/oobi/EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4/witness
+#
+#kli oobi resolve --name multisig1 --oobi-alias multisig3 --oobi http://127.0.0.1:5642/oobi/ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U/witness
+#kli oobi resolve --name multisig2 --oobi-alias multisig3 --oobi http://127.0.0.1:5642/oobi/ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U/witness
+#
+#kli oobi resolve --name multisig3 --oobi-alias vc --oobi http://127.0.0.1:7723/oobi/EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao
+#
+#kli rotate --name multisig1 --alias multisig1
+#kli rotate --name multisig2 --alias multisig2
+#kli rotate --name multisig3 --alias multisig3
+#
+#kli query --name multisig1 --alias multisig1 --prefix EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1 # 1 queries 2
+#kli query --name multisig1 --alias multisig1 --prefix ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U # 1 queries 3
+#
+#kli query --name multisig2 --alias multisig2 --prefix EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4 # 2 queries 1
+#kli query --name multisig2 --alias multisig2 --prefix ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U # 2 queries 3
+#
+#kli query --name multisig3 --alias multisig3 --prefix EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4 # 3 queries 1
+#kli query --name multisig3 --alias multisig3 --prefix EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1 # 3 queries 2
+#
+### Perform rotation of mulisig AID from local kli AIDs that roll themselves out and the new AIDs in
+#kli multisig rotate --name multisig1 --alias multisig \
+#         --smids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:2 \
+#         --smids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:2 \
+#         --smids ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U:1 \
+#         --isith '["1/2", "1/2", "1/2"]' \
+#         --rmids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:2 \
+#         --rmids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:2 \
+#         --rmids ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U:1 \
+#         --nsith '["1/2", "1/2", "1/2"]' &
+#pid=$!
+#PID_LIST="$pid"
+#
+#kli multisig rotate --name multisig2 --alias multisig \
+#         --smids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:2 \
+#         --smids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:2 \
+#         --smids ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U:1 \
+#         --isith '["1/2", "1/2", "1/2"]' \
+#         --rmids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:2 \
+#         --rmids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:2 \
+#         --rmids ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U:1 \
+#         --nsith '["1/2", "1/2", "1/2"]' &
+#pid=$!
+#PID_LIST+=" $pid"
+#
+#wait $PID_LIST
+#PID_LIST=""
+
+#kli oobi resolve --name multisig3 --oobi-alias multisig --oobi http://127.0.0.1:5642/oobi/EC61gZ9lCKmHAS7U5ehUfEbGId5rcY0D7MirFZHDQcE2/witness
+#
+#kli multisig join --name multisig3 --auto --group multisig
 #
 #kli vc export --name multisig1 --full --alias multisig > data/multigsig-rotate-in-and-revoke.cesr
 #
@@ -184,22 +182,21 @@ kli multisig join --name multisig3 --auto --group multisig
 #
 #kli vc registry rename --name multisig3 --registry-name vLEI --registry-said "EPcJecfM-anKxmkTaMB890ea5MpLGwCz5-eZ830Sp2f6"
 #
-kli oobi resolve --name multisig3 --oobi-alias holder --oobi http://127.0.0.1:5642/oobi/ELjSFdrTdCebJlmvbFNX9-TLhR2PO0_60al1kQp5_e6k/witness
-#
-kli vc list --name multisig3 --alias multisig --verbose --issued
-#
-#SAID=$(kli vc list --name multisig1 --alias multisig --issued --said)
-#echo "Revoking ${SAID}..."
-#TIME=$(date -Iseconds -u)
-#kli vc revoke --name multisig1 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
-#pid=$!
-#PID_LIST=" $pid"
-#
-#kli vc revoke --name multisig3 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
-#pid=$!
-#PID_LIST+=" $pid"
-#
-#wait $PID_LIST
+#kli oobi resolve --name multisig3 --oobi-alias holder --oobi http://127.0.0.1:5642/oobi/ELjSFdrTdCebJlmvbFNX9-TLhR2PO0_60al1kQp5_e6k/witness
+
+SAID=$(kli vc list --name multisig1 --alias multisig --issued --said)
+echo "Revoking ${SAID}..."
+TIME=$(date -Iseconds -u)
+kli vc revoke --name multisig1 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
+pid=$!
+PID_LIST=" $pid"
+
+kli vc revoke --name multisig2 --alias multisig --registry-name vLEI --said "${SAID}" --time "${TIME}" &
+pid=$!
+PID_LIST+=" $pid"
+
+kli vc list --name multisig1 --alias multisig --verbose --issued
+kli vc list --name multisig2 --alias multisig --verbose --issued
 
 #kli vc list --name holder --alias holder --poll
 ##

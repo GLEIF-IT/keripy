@@ -1031,7 +1031,7 @@ class Parser:
                                                              firner=firner, local=local)
 
                 except AttributeError as ex:
-                    msg = f"1 No kevery to process so dropped msg={serder.said}"
+                    msg = f"No kevery to process so dropped msg={serder.said}"
                     logger.info(msg)
                     logger.debug("Event Body = \n%s\n", serder.pretty())
                     raise kering.ValidationError(msg) from ex
@@ -1057,7 +1057,7 @@ class Parser:
                                                 local=local)
 
                 except AttributeError:
-                    raise kering.ValidationError("2 No kevery to process so dropped msg"
+                    raise kering.ValidationError("No kevery to process so dropped msg"
                                                  "= {}.".format(serder.pretty()))
                 except kering.UnverifiedReplyError as e:
                     if logger.isEnabledFor(logging.DEBUG):
