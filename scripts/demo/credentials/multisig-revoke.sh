@@ -5,6 +5,13 @@
 #   > vLEI-server -s ./schema/acdc -c ./samples/acdc/ -o ./samples/oobis/
 #
 
+# multisig1
+# EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4
+# multisig2
+# EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1
+# multisig3
+# ENkjt7khEI5edCMw5qugagbJw1QvGnQEtcewxb0FnU9U
+
 # Create local environments for multisig group
 kli init --name multisig1 --salt 0ACDEyMzQ1Njc4OWxtbm9aBc --nopasscode --config-dir ${KERI_SCRIPT_DIR} --config-file demo-witness-oobis
 kli incept --name multisig1 --alias multisig1 --file ${KERI_DEMO_SCRIPT_DIR}/data/multisig-1-sample.json
@@ -44,6 +51,7 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
 
 # Create a credential registry owned by the multisig issuer
 kli vc registry incept --name multisig1 --alias multisig --registry-name vLEI --usage "Issue vLEIs" --nonce AHSNDV3ABI6U8OIgKaj3aky91ZpNL54I5_7-qwtC6q2s &
@@ -55,6 +63,24 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
+
+# Rotate multisig keys:
+kli rotate --name multisig1 --alias multisig1
+kli query --name multisig2 --alias multisig2 --prefix EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4
+kli rotate --name multisig2 --alias multisig2
+kli query --name multisig1 --alias multisig1 --prefix EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1
+
+kli multisig rotate --name multisig1 --alias multisig --smids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:1 --smids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:1 &
+pid=$!
+PID_LIST=" $pid"
+
+kli multisig rotate --name multisig2 --alias multisig --smids EJccSRTfXYF6wrUVuenAIHzwcx3hJugeiJsEKmndi5q1:1 --smids EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4:1 &
+pid=$!
+PID_LIST+=" $pid"
+
+wait $PID_LIST
+PID_LIST=""
 
 # Issue Credential
 TIME=$(date -Iseconds -u)
@@ -67,6 +93,7 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
 
 SAID=$(kli vc list --name multisig1 --alias multisig --issued --said)
 
@@ -81,6 +108,7 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+PID_LIST=""
 
 echo "Polling for holder's IPEX message..."
 SAID=$(kli ipex list --name holder --alias holder --poll --said)
