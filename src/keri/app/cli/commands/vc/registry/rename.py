@@ -9,6 +9,7 @@ from keri.core import serdering
 from keri.db.dbing import dgKey
 from keri.kering import LikelyDuplicitousError
 from keri.vdr import credentialing, viring
+from keri.vdr import eventing as teventing
 
 logger = help.ogler.getLogger()
 
@@ -111,5 +112,7 @@ class RegistryRenamer(doing.DoDoer):
         regord = viring.RegistryRecord(registryKey=regk, prefix=self.hab.pre)
         self.rgy.reger.regs.pin(keys=(self.registryName,), val=regord)
         self.rgy.reger.regs.rem(keys=(self.name,))
+
+        self.rgy.processEscrows()
 
         self.remove(self.toRemove)
