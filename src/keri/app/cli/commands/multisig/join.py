@@ -386,7 +386,7 @@ class JoinDoer(doing.DoDoer):
             return False
 
         print()
-        print(f"Group Multisig ({ self.group}) Rotation proposed:")
+        print(f"Group Multisig Rotation proposed:")
         self.showRotation(mhab, smids, rmids, orot.ked)
 
         if self.auto:
@@ -404,7 +404,6 @@ class JoinDoer(doing.DoDoer):
                     if self.group is None:
                         group = "default-group"
                     else:
-                        print("setting group name to ", self.group)
                         group = self.group
                 else:
                     while True:
@@ -452,11 +451,8 @@ class JoinDoer(doing.DoDoer):
             print()
             displaying.printIdentifier(self.hby, ghab.pre)
 
-            for hab in self.hby.habs.values():
-                print(f"{hab.name} ({hab.pre})")
-            print("doooone")
             return True
-        print("doone")
+
         return False
 
     def showRotation(self, hab, smids, rmids, ked):
