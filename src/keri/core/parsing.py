@@ -7,15 +7,15 @@ message stream parsing support
 
 import logging
 
-from ..kering import Vrsn_1_0
+from ..kering import Vrsn_1_0, Vrsn_2_0
 from .coring import (Ilks, Seqner, Cigar,
                      Dater, Verfer, Prefixer, Saider, Pather, Matter)
-from .counting import Counter, CtrDex_1_0
+from .counting import Counter, Codens, CtrDex_1_0
 from .indexing import (Siger, )
 from . import serdering
 from .. import help
 from .. import kering
-from ..kering import Colds, sniff
+from ..kering import Colds, sniff, Vrsn_1_0, Vrsn_2_0
 
 logger = help.ogler.getLogger()
 
@@ -993,7 +993,7 @@ class Parser:
 
                     ctr = yield from self._extractor(ims=ims, klas=Counter, cold=cold)
 
-        except kering.ExtractionError as e:
+        except kering.ExtractionError as ex:
             if pipelined:  # extracted pipelined group is preflushed
                 raise kering.SizedGroupError("Error processing pipelined size"
                                              "attachment group of size={}.".format(pags))
