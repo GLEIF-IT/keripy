@@ -386,7 +386,7 @@ class JoinDoer(doing.DoDoer):
             return False
 
         print()
-        print(f"Group Multisig Rotation proposed:")
+        print("Group Multisig Rotation proposed:")
         self.showRotation(mhab, smids, rmids, orot.ked)
 
         if self.auto:
