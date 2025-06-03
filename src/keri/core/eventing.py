@@ -3816,17 +3816,14 @@ class Kevery:
                 if self.direct or self.lax or pre not in self.prefixes:  # not own event when owned
                     # create cue for receipt controller or watcher
                     # receipt of actual type is dependent on own type of identifier
-                    print("A")
                     self.cues.push(dict(kin="receipt", serder=serder))
                 elif not self.direct:  # notice of new  event
-                    print("B")
                     self.cues.push(dict(kin="notice", serder=serder))
 
                 if self.local and kever.locallyWitnessed():  #
                     # ToDo XXXX  need to cue task here kin = "witness" and process
                     # cued witness and then combine with reciept above so only
                     # one receipt is generated not two
-                    print("C")
                     self.cues.push(dict(kin="witness", serder=serder))
 
 
@@ -3910,17 +3907,14 @@ class Kevery:
                     if self.direct or self.lax or pre not in self.prefixes:  # not own event when owned
                         # create cue for receipt  controller or watcher
                         #  receipt of actual type is dependent on own type of identifier
-                        print("D")
                         self.cues.push(dict(kin="receipt", serder=serder))
                     elif not self.direct:  # notice of new  event
-                        print("#")
                         self.cues.push(dict(kin="notice", serder=serder))
 
                     if self.local and kever.locallyWitnessed():  #
                         # ToDo XXXX  need to cue task here kin = "witness" and process
                         # cued witness and then combine with reciept above so only
                         # one receipt is generated not two
-                        print("F")
                         self.cues.push(dict(kin="witness", serder=serder))
 
 

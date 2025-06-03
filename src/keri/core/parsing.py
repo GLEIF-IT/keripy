@@ -125,7 +125,7 @@ class Parser:
                     return klas(qb2=ims, strip=True, gvrsn=gvrsn)
                 else:
                     raise kering.ColdStartError("Invalid stream state cold={}.".format(cold))
-            except kering.ShortageError:
+            except kering.ShortageError as ex:
                 if abort:  # pipelined pre-collects full frame before extracting
                     raise  # bad pipelined frame so abort by raising error
                 yield
@@ -455,7 +455,6 @@ class Parser:
                 del ims[:]  # delete rest of stream to force cold restart
 
             except (kering.ValidationError, Exception) as ex:  # non Extraction Error
-                print("2", ex)
                 # Non extraction errors happen after successfully extracted from stream
                 # so we don't flush rest of stream just resume
                 if logger.isEnabledFor(logging.TRACE):
@@ -541,7 +540,6 @@ class Parser:
                 del ims[:]  # delete rest of stream to force cold restart
 
             except (kering.ValidationError, Exception) as ex:  # non Extraction Error
-                print("3", ex)
                 # Non extraction errors happen after successfully extracted from stream
                 # so we don't flush rest of stream just resume
                 if logger.isEnabledFor(logging.DEBUG):
@@ -715,7 +713,7 @@ class Parser:
         while True:  # extract, deserialize, and strip message from ims
             try:
                 serder = serdery.reap(ims=ims)  # can set version here
-            except kering.ShortageError:  # need more bytes
+            except kering.ShortageError as ex:  # need more bytes
                 yield
             else: # extracted and stripped successfully
                 break  # break out of while loop
@@ -995,7 +993,7 @@ class Parser:
 
                     ctr = yield from self._extractor(ims=ims, klas=Counter, cold=cold)
 
-        except kering.ExtractionError:
+        except kering.ExtractionError as e:
             if pipelined:  # extracted pipelined group is preflushed
                 raise kering.SizedGroupError("Error processing pipelined size"
                                              "attachment group of size={}.".format(pags))
@@ -1031,9 +1029,7 @@ class Parser:
                                                              firner=firner, local=local)
 
                 except AttributeError as ex:
-                    msg = f"No kevery to process so dropped msg={serder.said} {serder.pretty()}"
-                    print(msg)
-                    print(ex)
+                    msg = f"No kevery to process so dropped msg={serder.said}"
                     logger.info(msg)
                     logger.debug("Event Body = \n%s\n", serder.pretty())
                     raise kering.ValidationError(msg) from ex
@@ -1149,7 +1145,7 @@ class Parser:
                 try:
                     tvy.processEvent(serder=serder, seqner=seqner, saider=saider, wigers=wigers)
 
-                except AttributeError:
+                except AttributeError as e:
                     raise kering.ValidationError("No tevery to process so dropped msg"
                                                  "= {}.".format(serder.pretty()))
             else:
@@ -1163,7 +1159,7 @@ class Parser:
                 try:
                     prefixer, seqner, saider = ssts[-1] if ssts else (None, None, None)  # use last one if more than one
                     vry.processCredential(creder=serder, prefixer=prefixer, seqner=seqner, saider=saider)
-                except AttributeError:
+                except AttributeError as e:
                     raise kering.ValidationError("No verifier to process so dropped credential"
                                                  "= {}.".format(serder.pretty()))
             else:

@@ -491,7 +491,6 @@ class Habery:
 
 
         """
-        print("joining group", group)
         if mhab.pre not in smids and mhab.pre not in rmids:
             raise kering.ConfigurationError(f"Local member identifier "
                                             f"{mhab.pre} must be member of "
@@ -512,13 +511,11 @@ class Habery:
                                                     f" next members ={rmids}")
 
         # create group Hab in this Habery
-        print("joining group hab", group, pre, mhab.pre, smids, rmids)
         hab = GroupHab(ks=self.ks, db=self.db, cf=self.cf, mgr=self.mgr,
                        rtr=self.rtr, rvy=self.rvy, kvy=self.kvy, psr=self.psr,
                        name=group, ns=ns, mhab=mhab, smids=smids, rmids=rmids, temp=self.temp)
 
         hab.pre = pre
-        print("joining group habbord", self.name, mhab.pre, smids, rmids)
         habord = basing.HabitatRecord(hid=hab.pre,
                                       name=self.name,
                                       domain=ns,
