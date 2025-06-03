@@ -3814,8 +3814,8 @@ class Kevery:
                 # acceptance should follow from here.
 
                 if self.direct or self.lax or pre not in self.prefixes:  # not own event when owned
-                    # create cue for receipt controller or watcher
-                    # receipt of actual type is dependent on own type of identifier
+                    # create cue for receipt  controller or watcher
+                    #  receipt of actual type is dependent on own type of identifier
                     self.cues.push(dict(kin="receipt", serder=serder))
                 elif not self.direct:  # notice of new  event
                     self.cues.push(dict(kin="notice", serder=serder))
