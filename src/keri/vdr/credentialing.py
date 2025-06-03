@@ -82,6 +82,7 @@ class Regery:
             raise kering.ConfigurationError(f"Unknown prefix {prefix} for creating Registry {name}")
 
         reg = Registry(hab=hab, name=name, reger=self.reger, tvy=self.tvy, psr=self.psr, cues=self.cues)
+
         reg.make(**kwa)
         self.regs[reg.regk] = reg
 
@@ -278,6 +279,7 @@ class Registry(BaseRegistry):
 
         """
         pre = self.hab.pre
+
         if vcp is None:
             baks = baks if baks is not None else []
 

@@ -491,6 +491,7 @@ class Habery:
 
 
         """
+
         if mhab.pre not in smids and mhab.pre not in rmids:
             raise kering.ConfigurationError(f"Local member identifier "
                                             f"{mhab.pre} must be member of "
