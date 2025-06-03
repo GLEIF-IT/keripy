@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # WITNESSES
 # To run the following scripts, open another console window and run:
 # $ kli witness demo
@@ -36,4 +37,5 @@ pid=$!
 PID_LIST+=" $pid"
 
 wait $PID_LIST
+
 echo "Test Complete"
