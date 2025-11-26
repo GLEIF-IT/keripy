@@ -271,7 +271,12 @@ def test_standalone_kli_commands(helpers, capsys):
                           '  "tel-missing-signature": 0,\n'
                           '  "tel-partial-witness-escrow": 0,\n'
                           '  "tel-multisig": 0,\n'
-                          '  "tel-event-dissemination": 0\n'
+                          '  "tel-event-dissemination": 0,\n'
+                          '  "registry-missing-anchor": 0,\n'
+                          '  "registry-out-of-order": 0,\n'
+                          '  "credential-missing-registry": 0,\n'
+                          '  "credential-missing-anchor": 0,\n'
+                          '  "credential-out-of-order": 0\n'
                           '}\n')
 
 

@@ -213,6 +213,23 @@ def escrows(tymth, tock=0.0, **opts):
             if (not escrow) or escrow == "tel-event-dissemination":
                 escrows["tel-event-dissemination"] = sum(1 for key, _ in reger.tede.getItemIter())
 
+            # Broker / Transaction State escrows
+
+            if (not escrow) or escrow == "registry-missing-anchor":
+                escrows["registry-missing-anchor"] = sum(1 for key, _ in reger.txnsb.escrowdb.getItemIter(keys=("registry-mae", "")))
+
+            if (not escrow) or escrow == "registry-out-of-order":
+                escrows["registry-out-of-order"] = sum(1 for key, _ in reger.txnsb.escrowdb.getItemIter(keys=("registry-ooo", "")))
+
+            if (not escrow) or escrow == "credential-missing-registry":
+                escrows["credential-missing-registry"] = sum(1 for key, _ in reger.txnsb.escrowdb.getItemIter(keys=("credential-mre", "")))
+
+            if (not escrow) or escrow == "credential-missing-anchor":
+                escrows["credential-missing-anchor"] = sum(1 for key, _ in reger.txnsb.escrowdb.getItemIter(keys=("credential-mae", "")))
+
+            if (not escrow) or escrow == "credential-out-of-order":
+                escrows["credential-out-of-order"] = sum(1 for key, _ in reger.txnsb.escrowdb.getItemIter(keys=("credential-ooo", "")))
+
             print(json.dumps(escrows, indent=2))
 
     except ConfigurationError as e:
