@@ -380,6 +380,13 @@ def test_clearEscrows():
         db.tmse.add(("a", "b"), (prefixer, seqner, saider))
         db.tede.add(("a", "b"), (prefixer, seqner, saider))
 
+        dater = coring.Dater()
+        broker_saider = coring.Saider(qb64="EBD919wF4oiG7ck6mnBWTRD_Z-Io0wZKCxL0zjx5je9I")
+        aid = "ECD919wF4oiG7ck6mnBWTRD_Z-Io0wZKCxL0zjx5je9I"
+        for typ in ["registry-mae", "registry-ooo", "credential-mre", "credential-mae", "credential-ooo"]:
+            db.txnsb.escrowdb.put(keys=(typ, pre, aid), vals=[broker_saider])
+            db.txnsb.daterdb.put(keys=(broker_saider.qb64,), val=dater)
+
         assert db.getOot(ooKey) == vdig.qb64b
         assert db.getTwe(ooKey) == vdig.qb64b
         assert db.getTae(ooKey) == vdig.qb64b
@@ -390,6 +397,9 @@ def test_clearEscrows():
         assert db.tpwe.cntAll() == 1
         assert db.tmse.cntAll() == 1
         assert db.tede.cntAll() == 1
+
+        for typ in ["registry-mae", "registry-ooo", "credential-mre", "credential-mae", "credential-ooo"]:
+            assert db.txnsb.escrowdb.get(keys=(typ, pre, aid)) != []
 
         db.clearEscrows()
 
@@ -403,6 +413,11 @@ def test_clearEscrows():
         assert db.tpwe.cntAll() == 0
         assert db.tmse.cntAll() == 0
         assert db.tede.cntAll() == 0
+
+        # Verify Broker escrows were cleared
+        for typ in ["registry-mae", "registry-ooo", "credential-mre", "credential-mae", "credential-ooo"]:
+            assert db.txnsb.escrowdb.get(keys=(typ, pre, aid)) == []
+        assert db.txnsb.daterdb.get(keys=(broker_saider.qb64,)) is None
 
 def test_mailbox_db_size_set_from_env_var():
     # Clear environment before test

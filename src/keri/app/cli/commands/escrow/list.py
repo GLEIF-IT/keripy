@@ -213,8 +213,6 @@ def escrows(tymth, tock=0.0, **opts):
             if (not escrow) or escrow == "tel-event-dissemination":
                 escrows["tel-event-dissemination"] = sum(1 for key, _ in reger.tede.getItemIter())
 
-            # Broker / Transaction State escrows
-
             if (not escrow) or escrow == "registry-missing-anchor":
                 escrows["registry-missing-anchor"] = sum(1 for key, _ in reger.txnsb.escrowdb.getItemIter(keys=("registry-mae", "")))
 
