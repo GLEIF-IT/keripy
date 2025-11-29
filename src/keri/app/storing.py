@@ -9,7 +9,7 @@ from hio.base import doing
 from hio.help import decking
 from ordered_set import OrderedSet as oset
 
-from . import forwarding
+from . import forwarding, tocking
 from .. import help
 from ..core import coring, serdering
 from ..core.coring import MtrDex
@@ -248,7 +248,7 @@ class Respondant(doing.DoDoer):
 
             yield self.tock
 
-    def cueDo(self, tymth=None, tock=0.0):
+    def cueDo(self, tymth=None, tock=None):
         """
          Returns doifiable Doist compatibile generator method (doer dog) to process
             Kevery and Tevery cues deque
@@ -258,7 +258,7 @@ class Respondant(doing.DoDoer):
         """
         # enter context
         self.wind(tymth)
-        self.tock = tock
+        self.tock = tock if tock is not None else tocking.RespondantCueTock
         _ = (yield self.tock)
 
         while True:
