@@ -1,11 +1,7 @@
 
 .PHONY: build-keri
 
-<<<<<<< Updated upstream
-VERSION=1.1.41
-=======
 VERSION=1.1.42
->>>>>>> Stashed changes
 
 define DOCKER_WARNING
 In order to use the multi-platform build enable the containerd image store
