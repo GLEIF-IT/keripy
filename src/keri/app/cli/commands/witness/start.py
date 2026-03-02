@@ -96,7 +96,8 @@ def runWitness(name="witness", base="", alias="witness", bran="", tcp=5631, http
     if configFile is not None:
         cf = configing.Configer(name=configFile, headDirPath=configDir, temp=False, reopen=True, clear=False)
     
-    aids  = cf.get("aids", default=None) if cf is not None else None
+    config = cf.get() if cf is not None else {}
+    aids = config.get("aids") if config else None
 
     if aeid is None:
         hby = habbing.Habery(name=name, base=base, bran=bran, cf=cf)
