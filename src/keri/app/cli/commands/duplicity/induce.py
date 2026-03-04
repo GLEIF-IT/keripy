@@ -29,8 +29,6 @@ parser.add_argument('--passcode', '-p', help='21 character encryption passcode f
 parser.add_argument('--data', '-d', help='Anchor data for the interaction event, \'@\' allowed for file path',
                     default=None, action="store", required=False)
 parser.add_argument('--witness', '-w', help='AID prefix of the single witness to send the event to', required=True)
-parser.add_argument('--force', '-f', help='Skip confirmation prompt (for CI/automated testing)',
-                    action='store_true', default=False)
 
 
 def induce(args):
@@ -49,7 +47,6 @@ def induce(args):
     base = args.base
     bran = args.bran
     witness = args.witness
-    force = args.force
 
     if args.data is not None:
         try:
@@ -67,7 +64,7 @@ def induce(args):
         data = None
 
     induceDoer = DuplicityInduceDoer(name=name, base=base, alias=alias, bran=bran,
-                                      data=data, witness=witness, force=force)
+                                      data=data, witness=witness)
 
     return [induceDoer]
 
@@ -80,7 +77,7 @@ class DuplicityInduceDoer(doing.DoDoer):
     WARNING: This will permanently compromise the AID.
     """
 
-    def __init__(self, name, base, bran, alias, data=None, witness=None, force=False):
+    def __init__(self, name, base, bran, alias, data=None, witness=None):
         """
         Initialize the DuplicityInduceDoer.
 
@@ -91,12 +88,10 @@ class DuplicityInduceDoer(doing.DoDoer):
             alias (str): Alias of the identifier
             data (list): Anchor data for the interaction event
             witness (str): AID prefix of the single witness to send to
-            force (bool): Skip confirmation prompt
         """
         self.alias = alias
         self.data = data
         self.witness = witness
-        self.force = force
 
         self.hby = existing.setupHby(name=name, base=base, bran=bran)
         self.hbyDoer = habbing.HaberyDoer(habery=self.hby)
@@ -107,9 +102,6 @@ class DuplicityInduceDoer(doing.DoDoer):
     def induceDo(self, tymth, tock=0.0, **opts):
         """
         Generator method that creates the duplicitous event and sends it.
-
-        Returns:
-            doifiable Doist compatible generator method
         """
         self.wind(tymth)
         self.tock = tock
@@ -129,42 +121,40 @@ class DuplicityInduceDoer(doing.DoDoer):
             self.remove([self.hbyDoer])
             return
 
-        # Show confirmation warning unless --force is used
-        if not self.force:
-            print("\n" + "=" * 60)
-            print("  WARNING: DUPLICITY INDUCTION")
-            print("=" * 60)
-            print()
-            print("This command creates a divergent event log entry and publishes")
-            print("it to a single witness. This WILL produce detectable duplicity")
-            print("for this AID.")
-            print()
-            print("THIS AID WILL BE PERMANENTLY COMPROMISED.")
-            print()
-            print("This command exists solely for testing watcher duplicity")
-            print("detection pipelines. Do not use it on production identifiers.")
-            print()
-            print(f"  AID:      {hab.pre}")
-            print(f"  Alias:    {self.alias}")
-            print(f"  Base:     {self.hby.base}")
-            print(f"  Witness:  {self.witness}")
-            print(f"  Data:     {self.data}")
-            print()
+        # Show confirmation warning
+        print("\n" + "=" * 60)
+        print("  WARNING: DUPLICITY INDUCTION")
+        print("=" * 60)
+        print()
+        print("This command creates a divergent event log entry and publishes")
+        print("it to a single witness. This WILL produce detectable duplicity")
+        print("for this AID.")
+        print()
+        print("THIS AID WILL BE PERMANENTLY COMPROMISED.")
+        print()
+        print("This command exists solely for testing watcher duplicity")
+        print("detection pipelines. Do not use it on production identifiers.")
+        print()
+        print(f"  AID:      {hab.pre}")
+        print(f"  Alias:    {self.alias}")
+        print(f"  Base:     {self.hby.base}")
+        print(f"  Witness:  {self.witness}")
+        print(f"  Data:     {self.data}")
+        print()
 
-            try:
-                response = input("Type 'yes I want duplicity' to proceed: ")
-            except EOFError:
-                print("\nAborted: No input received (non-interactive mode)")
-                print("Use --force flag for automated/CI testing")
-                self.remove([self.hbyDoer])
-                return
+        try:
+            response = input("Type 'yes I want duplicity' to proceed: ")
+        except EOFError:
+            print("\nAborted: No input received (non-interactive mode)")
+            self.remove([self.hbyDoer])
+            return
 
-            if response != "yes I want duplicity":
-                print("\nAborted: Confirmation not received")
-                self.remove([self.hbyDoer])
-                return
+        if response != "yes I want duplicity":
+            print("\nAborted: Confirmation not received")
+            self.remove([self.hbyDoer])
+            return
 
-            print()
+        print()
 
         # Create and sign the interaction event
         print(f"Creating interaction event with data: {self.data}")
