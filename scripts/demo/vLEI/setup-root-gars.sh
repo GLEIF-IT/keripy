@@ -27,8 +27,8 @@ ROOT1_PRE="EF11YNn4i0r0dX1KNrWs_ATQH878L3blwCMOSgwQVi57"
 ROOT2_PRE="ENBdaRLJH7JOBAZo6aZbXelFP_I9yMd-RFrJ6pJ7V3CY"
 GAR1_PRE="EM0Di_wQZhUA0uKsR0gC0bSnOxcroCX-JbUuX9TBcvA1"
 GAR2_PRE="EA7cQdIZoCoQGWbjdVQYBVo4aNURsQml-vnEV8RMaSIG"
-ROOT_PRE="EG0TRj_O4kAelbdtvLlYviu6uoQFkiDn3I4kTwA7odzx"
-GARS_PRE="EH7-jpsut3LXxo0wwUubLp4F8goX84CaWsL-H34Je_Od"
+ROOT_PRE="ECbVd-kmWq0J8DHxLN6bKz3WbHtSl8RgeTD3VtnF9tQ4"
+GARS_PRE="EAbWX_-KFnE51AB7pi9UJNDCQwjmPXvmzkB7RJJWv4pG"
 
 # ---- Root locals --------------------------------------------------------
 kli init --name root1 --passcode ${PASSCODE} --salt 0ACDEyMzQ1Njc4OWdoaWpdo1 --config-dir ${KERI_SCRIPT_DIR} --config-file demo-witness-oobis
@@ -76,19 +76,33 @@ kli oobi resolve --name root1 --passcode ${PASSCODE} --oobi-alias gar2 --oobi ${
 kli oobi resolve --name root2 --passcode ${PASSCODE} --oobi-alias gar1 --oobi ${WITNESS_HOST}/oobi/${GAR1_PRE}/witness/${WIT}
 kli oobi resolve --name root2 --passcode ${PASSCODE} --oobi-alias gar2 --oobi ${WITNESS_HOST}/oobi/${GAR2_PRE}/witness/${WIT}
 
+# ---- Pre-rotate Root members so the group can rotate to approve ----------
+# Root is establishment-only: it can only approve a delegation by anchoring the seal in a
+# ROTATION (not an interaction). A group rotation's new keys are the members' pre-committed
+# next keys, so each member must first rotate its own local hab (revealing those keys) and then
+# learn the other member's new key state. Done BEFORE the GARs delegation so its wait timer
+# does not run during these rotations.
+kli rotate --name root1 --passcode ${PASSCODE} --alias root1
+kli rotate --name root2 --passcode ${PASSCODE} --alias root2
+kli query --name root1 --passcode ${PASSCODE} --alias root1 --prefix ${ROOT2_PRE}
+kli query --name root2 --passcode ${PASSCODE} --alias root2 --prefix ${ROOT1_PRE}
+
 # ---- Multisig incept "GARs" (delegated from Root) -----------------------
-kli multisig incept --name gar1 --passcode ${PASSCODE} --alias gar1 --group GARs --file ${KERI_DEMO_SCRIPT_DIR}/data/multisig-gars.json &
+# Longer --wait: the rotation-anchored approval (group rotation + counselor + witness receipts)
+# takes longer than the old interaction-anchored path.
+kli multisig incept --name gar1 --passcode ${PASSCODE} --alias gar1 --group GARs --wait 90 --file ${KERI_DEMO_SCRIPT_DIR}/data/multisig-gars.json &
 PID_LIST+=" $!"
-kli multisig incept --name gar2 --passcode ${PASSCODE} --alias gar2 --group GARs --file ${KERI_DEMO_SCRIPT_DIR}/data/multisig-gars.json &
+kli multisig incept --name gar2 --passcode ${PASSCODE} --alias gar2 --group GARs --wait 90 --file ${KERI_DEMO_SCRIPT_DIR}/data/multisig-gars.json &
 PID_LIST+=" $!"
 
 # Give the delegation request time to reach Root members
 sleep 3
 
 # ---- Root approves the GARs inception -----------------------------------
-kli delegate confirm --name root1 --passcode ${PASSCODE} --alias Root --interact --auto &
+# Root is establishment-only, so the approval must anchor in a rotation (no --interact).
+kli delegate confirm --name root1 --passcode ${PASSCODE} --alias Root --auto &
 PID_LIST+=" $!"
-kli delegate confirm --name root2 --passcode ${PASSCODE} --alias Root --interact --auto &
+kli delegate confirm --name root2 --passcode ${PASSCODE} --alias Root --auto &
 PID_LIST+=" $!"
 
 wait $PID_LIST

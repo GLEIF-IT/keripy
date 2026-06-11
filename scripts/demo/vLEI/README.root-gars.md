@@ -35,8 +35,8 @@ root1 local    : EF11YNn4i0r0dX1KNrWs_ATQH878L3blwCMOSgwQVi57
 root2 local    : ENBdaRLJH7JOBAZo6aZbXelFP_I9yMd-RFrJ6pJ7V3CY
 gar1  local    : EM0Di_wQZhUA0uKsR0gC0bSnOxcroCX-JbUuX9TBcvA1
 gar2  local    : EA7cQdIZoCoQGWbjdVQYBVo4aNURsQml-vnEV8RMaSIG
-Root  multisig : EG0TRj_O4kAelbdtvLlYviu6uoQFkiDn3I4kTwA7odzx
-GARs  multisig : EH7-jpsut3LXxo0wwUubLp4F8goX84CaWsL-H34Je_Od
+Root  multisig : ECbVd-kmWq0J8DHxLN6bKz3WbHtSl8RgeTD3VtnF9tQ4  (EstOnly)
+GARs  multisig : EAbWX_-KFnE51AB7pi9UJNDCQwjmPXvmzkB7RJJWv4pG
 ```
 
 Change any salt, witness, or threshold and these (plus the `aids`/`delpre`
