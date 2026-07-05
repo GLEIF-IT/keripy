@@ -10,14 +10,23 @@
 # Must be run AFTER setup-root-gars.sh AND AFTER citadel has migrated the
 # Root keystores. Running before migration leaves a 1.1.41-formatted entry
 # in Root's pdes escrow that citadel's migration cannot read.
-#cl
+#
 # Prerequisites:
 #   source scripts/demo/demo-scripts.sh
 #   kli witness demo                # in another terminal
 #   ./setup-root-gars.sh            # already run
-#   citadel/1.2.x                   # already pointed at root1/root2 and migrated
+#   citadel/1.2.x                   # already pointed at root1/root2/root3 and migrated
 
 PASSCODE="${PASSCODE:-DoB26Fj4x9LboAFWJra17O}"
+
+# Root is a 3-of-7 establishment-only multisig. Approving this drt (Phase D, in
+# citadel) is another Root GROUP ROTATION. A rotation only needs enough members
+# rotated to satisfy the prior next-key threshold — any 3 of 7 — so ONLY the three
+# signers (root1/root2/root3) rotate, and they do it in citadel at approval time.
+# The four non-signers (root4..root7) are deliberately NOT rotated here: they are
+# carried forward inert with their existing keys, exactly as in production. Pre-
+# rotating inert members just to make the rotation build is the crutch this repro
+# is meant to avoid.
 
 # KLI entrypoint. Defaults to the stock `kli` (logs at CRITICAL). For verbose
 # tracing of the multisig rotate / drt exchange, point KLI at a debug wrapper
@@ -36,6 +45,9 @@ if pgrep -f "kli multisig rotate.*--alias GARs" > /dev/null; then
     echo "Kill them first: pkill -f 'kli multisig rotate.*--alias GARs'" >&2
     exit 1
 fi
+
+# The Root non-signers (root4..root7) are NOT rotated: they carry forward inert.
+# Only the three signers rotate, in citadel, at approval time.
 
 # ---- Rotate each GAR local ---------------------------------------------
 kli rotate --name gar1 --passcode ${PASSCODE} --alias gar1
@@ -81,12 +93,18 @@ GARs drt request dispatched; rotate processes stopped.
   gar2 log=/tmp/rotate-gar2.log
 
 GARs is now pending at sn=0 (drt staged, awaiting Root's anchor).
+The Root non-signers (root4..root7) are NOT rotated — they carry forward inert.
 
 Next:
-  1. In citadel (Root), approve the Delegated Rotation Approval.
-  2. Run finalize-gars-rotation.sh to commit GARs to sn=1.
+  1. In citadel (Root), for each signer instance (root1/root2/root3) rotate keys
+     and refresh key state. Only these three rotate; their three exposed keys
+     satisfy the 3-of-7 rotation threshold, and root4..root7 carry forward inert
+     with their existing keys (as in production).
+  2. Approve the Delegated Rotation Approval — citadel anchors it in a 3-of-7
+     Root group rotation.
+  3. Run finalize-gars-rotation.sh to commit GARs to sn=1.
 
-Verify the notice landed on Root:
+Verify the notice landed on Root (root1/root2/root3 all hold the Root group):
   kli notifications list -n root1 -p ${PASSCODE}
 should now include a /delegate/request entry.
 EOF

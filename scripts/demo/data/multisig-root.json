@@ -1,7 +1,12 @@
 {
   "aids": [
     "EF11YNn4i0r0dX1KNrWs_ATQH878L3blwCMOSgwQVi57",
-    "ENBdaRLJH7JOBAZo6aZbXelFP_I9yMd-RFrJ6pJ7V3CY"
+    "ENBdaRLJH7JOBAZo6aZbXelFP_I9yMd-RFrJ6pJ7V3CY",
+    "EMEmbjR7mw0LvPk8co4q8Ks_0iX2anSnFu0NXh2WI80U",
+    "ELAxo784aHZUWnRyd44VlkruUmiqQWc-pPYnZT-NtxLT",
+    "EDoJYSnGXF6C2ftkcAWr4pBDDOPy3p6UDDPw2Mkm957u",
+    "EMBkecmXbrbX_MOZnjbLi5DT975gPaMywbu_xRx3GZEH",
+    "EESfhafScg-EQcdvmSxDKBZ9tZ31gRVpg9uR4sKZy4GD"
   ],
   "transferable": true,
   "wits": [
@@ -10,7 +15,7 @@
     "BIKKuvBwpmDVA4Ds-EpL5bt9OqPzWPja2LigFYZN2YfX"
   ],
   "toad": 3,
-  "isith": "2",
-  "nsith": "2",
+  "isith": ["1/3", "1/3", "1/3", "1/3", "1/3", "1/3", "1/3"],
+  "nsith": ["1/3", "1/3", "1/3", "1/3", "1/3", "1/3", "1/3"],
   "estOnly": true
 }
