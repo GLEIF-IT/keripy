@@ -6,6 +6,8 @@ keri.app.grouping module
 module for enveloping and forwarding KERI message
 """
 
+import os
+
 from hio.base import doing
 from hio.help import decking
 
@@ -18,6 +20,18 @@ from ..db.dbing import snKey
 from ..peer import exchanging
 
 logger = help.ogler.getLogger()
+
+
+def counselorEscrowTock():
+    """Return an optional command-specific counselor cadence from the environment."""
+    value = os.getenv("KERI_COUNSELOR_ESCROW_TOCK")
+    if value is None:
+        return None
+
+    tock = float(value)
+    if tock < 1 / 32:
+        raise ValueError("KERI_COUNSELOR_ESCROW_TOCK cannot be below one HIO tick")
+    return tock
 
 
 class Counselor(doing.DoDoer):
@@ -92,13 +106,17 @@ class Counselor(doing.DoDoer):
 
         """
         # enter context
+        configuredTock = counselorEscrowTock()
+        activeTock = configuredTock if configuredTock is not None else tock
         self.wind(tymth)
-        self.tock = tock
+        self.tock = activeTock
         _ = (yield self.tock)
 
         while True:
             self.processEscrows()
-            yield 0.5
+            # Preserve the production repeat cadence unless a local command
+            # process explicitly requests a faster scheduler-safe value.
+            yield configuredTock if configuredTock is not None else 0.5
 
     def processEscrows(self):
         self.processPartialSignedEscrow()
@@ -692,4 +710,3 @@ class Multiplexor:
             ))
 
         return exns
-

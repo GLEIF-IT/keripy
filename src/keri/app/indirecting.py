@@ -8,6 +8,7 @@ simple indirect mode demo support classes
 import datetime
 
 import falcon
+import os
 import time
 import sys
 import traceback
@@ -32,6 +33,20 @@ from ..vdr import verifying, viring
 from ..vdr.eventing import Tevery
 
 logger = help.ogler.getLogger()
+
+
+def pollerEventTock():
+    """Return an optional command-specific mailbox SSE cadence."""
+    value = os.getenv("KERI_POLLER_EVENT_TOCK")
+    if value is None:
+        return None
+
+    tock = float(value)
+    if tock < 1 / 32:
+        raise ValueError(
+            "KERI_POLLER_EVENT_TOCK cannot be below one HIO tick"
+        )
+    return tock
 
 
 def setupWitness(hby, alias="witness", mbx=None, aids=None, tcpPort=5631, httpPort=5632,
@@ -757,8 +772,10 @@ class Poller(doing.DoDoer):
         Usage:
             add result of doify on this method to doers list
         """
+        configuredTock = pollerEventTock()
+        activeTock = configuredTock if configuredTock is not None else tock
         self.wind(tymth)
-        self.tock = tock
+        self.tock = activeTock
         _ = (yield self.tock)
 
         witrec = self.hab.db.tops.get((self.pre, self.witness))
@@ -823,7 +840,9 @@ class Poller(doing.DoDoer):
                     self.times[tpc] = helping.nowUTC()
                     self.hab.db.tops.pin((self.pre, self.witness), witrec)
 
-                yield 0.25
+                # Preserve the production quarter-second loop unless a
+                # bounded local command explicitly selects a faster cadence.
+                yield configuredTock if configuredTock is not None else 0.25
             yield self.retry / 1000
 
 

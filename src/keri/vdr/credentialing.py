@@ -5,6 +5,7 @@ keri.vdr.credentialing module
 
 VC issuer support
 """
+import os
 from typing import Optional
 
 from hio.base import doing
@@ -24,6 +25,20 @@ from ..vdr import eventing
 from ..vdr.viring import Reger
 
 logger = help.ogler.getLogger()
+
+
+def vdrEscrowTock():
+    """Return an optional command-specific VDR escrow cadence."""
+    value = os.getenv("KERI_VDR_ESCROW_TOCK")
+    if value is None:
+        return None
+
+    tock = float(value)
+    if tock < 1 / 32:
+        raise ValueError(
+            "KERI_VDR_ESCROW_TOCK cannot be below one HIO tick"
+        )
+    return tock
 
 
 class Regery:
@@ -669,13 +684,15 @@ class Registrar(doing.DoDoer):
 
         """
         # enter context
+        configuredTock = vdrEscrowTock()
+        activeTock = configuredTock if configuredTock is not None else tock
         self.wind(tymth)
-        self.tock = tock
+        self.tock = activeTock
         _ = (yield self.tock)
 
         while True:
             self.processEscrows()
-            yield 0.5
+            yield configuredTock if configuredTock is not None else 0.5
 
     def processEscrows(self):
         """
@@ -895,13 +912,15 @@ class Credentialer(doing.DoDoer):
 
         """
         # enter context
+        configuredTock = vdrEscrowTock()
+        activeTock = configuredTock if configuredTock is not None else tock
         self.wind(tymth)
-        self.tock = tock
+        self.tock = activeTock
         _ = (yield self.tock)
 
         while True:
             self.processEscrows()
-            yield 0.5
+            yield configuredTock if configuredTock is not None else 0.5
 
     def processEscrows(self):
         """

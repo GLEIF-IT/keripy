@@ -15,6 +15,19 @@ from keri.app import indirecting, storing, habbing
 from keri.core import coring, serdering
 
 
+def test_poller_event_tock(monkeypatch):
+    """Require an opt-in cadence at or above the HIO scheduler floor."""
+    monkeypatch.delenv("KERI_POLLER_EVENT_TOCK", raising=False)
+    assert indirecting.pollerEventTock() is None
+
+    monkeypatch.setenv("KERI_POLLER_EVENT_TOCK", "0.03125")
+    assert indirecting.pollerEventTock() == 0.03125
+
+    monkeypatch.setenv("KERI_POLLER_EVENT_TOCK", "0.01")
+    with pytest.raises(ValueError, match="below one HIO tick"):
+        indirecting.pollerEventTock()
+
+
 def test_mailbox_iter():
     pre = "EA3mbE6upuYnFlx68GmLYCQd7cCcwG_AtHM6dW_GT068"
     mbx = storing.Mailboxer(temp=True)

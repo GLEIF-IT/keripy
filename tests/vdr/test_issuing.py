@@ -15,6 +15,19 @@ from keri.vdr import credentialing
 from tests.vdr import buildHab
 
 
+def test_vdr_escrow_tock(monkeypatch):
+    """Require an opt-in cadence at or above the HIO scheduler floor."""
+    monkeypatch.delenv("KERI_VDR_ESCROW_TOCK", raising=False)
+    assert credentialing.vdrEscrowTock() is None
+
+    monkeypatch.setenv("KERI_VDR_ESCROW_TOCK", "0.03125")
+    assert credentialing.vdrEscrowTock() == 0.03125
+
+    monkeypatch.setenv("KERI_VDR_ESCROW_TOCK", "0.01")
+    with pytest.raises(ValueError, match="below one HIO tick"):
+        credentialing.vdrEscrowTock()
+
+
 def credential(hab, regk):
     """
     Generate test credential from with Habitat as issuer

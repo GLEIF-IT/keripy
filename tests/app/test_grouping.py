@@ -5,12 +5,27 @@ tests.app.grouping module
 """
 from contextlib import contextmanager
 
+import pytest
+
 
 from keri.app import habbing, grouping, notifying
 from keri.core import coring, eventing, parsing, serdering
 from keri.vdr import eventing as veventing
 from keri.db import dbing
 from keri.peer import exchanging
+
+
+def test_counselor_escrow_tock(monkeypatch):
+    """Require an opt-in cadence at or above the HIO scheduler floor."""
+    monkeypatch.delenv("KERI_COUNSELOR_ESCROW_TOCK", raising=False)
+    assert grouping.counselorEscrowTock() is None
+
+    monkeypatch.setenv("KERI_COUNSELOR_ESCROW_TOCK", "0.03125")
+    assert grouping.counselorEscrowTock() == 0.03125
+
+    monkeypatch.setenv("KERI_COUNSELOR_ESCROW_TOCK", "0.01")
+    with pytest.raises(ValueError, match="below one HIO tick"):
+        grouping.counselorEscrowTock()
 
 
 def test_counselor():
