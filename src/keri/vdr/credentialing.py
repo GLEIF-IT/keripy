@@ -497,7 +497,9 @@ class Registrar(doing.DoDoer):
         self.witDoer = agenting.WitnessReceiptor(hby=self.hby)
         self.witPub = agenting.WitnessPublisher(hby=self.hby)
 
-        doers = [self.witDoer, self.witPub, doing.doify(self.escrowDo)]
+        doers = [self.witDoer, self.witPub,
+                 doing.doify(self.escrowDo,
+                             tock=hby.tocks["registrarEscrow"])]
 
         super(Registrar, self).__init__(doers=doers)
 
@@ -652,7 +654,7 @@ class Registrar(doing.DoDoer):
         said = self.rgy.reger.ctel.get(keys=(pre, seqner.qb64))
         return said is not None and self.witPub.sent(said=pre)
 
-    def escrowDo(self, tymth, tock=1.0, **kwa):
+    def escrowDo(self, tymth, tock=0.5, **kwa):
         """ Process escrows of group multisig identifiers waiting to be compeleted.
 
         Steps involve:
@@ -671,12 +673,11 @@ class Registrar(doing.DoDoer):
         """
         # enter context
         self.wind(tymth)
-        self.tock = tock
-        _ = (yield self.tock)
+        _ = (yield tock)
 
         while True:
             self.processEscrows()
-            yield 0.5
+            yield tock
 
     def processEscrows(self):
         """
@@ -770,7 +771,8 @@ class Credentialer(doing.DoDoer):
         self.rgy = rgy
         self.registrar = registrar
         self.verifier = verifier
-        doers = [doing.doify(self.escrowDo)]
+        doers = [doing.doify(self.escrowDo,
+                             tock=hby.tocks["credentialerEscrow"])]
 
         super(Credentialer, self).__init__(doers=doers)
 
@@ -878,7 +880,7 @@ class Credentialer(doing.DoDoer):
     def complete(self, said):
         return self.rgy.reger.ccrd.get(keys=(said,)) is not None
 
-    def escrowDo(self, tymth, tock=1.0, **kwa):
+    def escrowDo(self, tymth, tock=0.5, **kwa):
         """ Process escrows of group multisig identifiers waiting to be completed.
 
         Steps involve:
@@ -897,12 +899,11 @@ class Credentialer(doing.DoDoer):
         """
         # enter context
         self.wind(tymth)
-        self.tock = tock
-        _ = (yield self.tock)
+        _ = (yield tock)
 
         while True:
             self.processEscrows()
-            yield 0.5
+            yield tock
 
     def processEscrows(self):
         """
