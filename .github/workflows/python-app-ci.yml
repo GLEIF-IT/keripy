@@ -31,8 +31,19 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flake8 pytest hio
+          pip install flake8 pytest
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip check
+          python - <<'PYTHON'  # Verify the pinned version and exclusive hio import ownership.
+          from importlib import metadata
+
+          assert metadata.version("gleif_hio") == "0.6.20rc2"
+          providers = {
+              name.replace("_", "-")
+              for name in metadata.packages_distributions()["hio"]
+          }
+          assert providers == {"gleif-hio"}
+          PYTHON
       - name: Lint changes
         run: |
           # stop the build if there are Python syntax errors or undefined names
@@ -61,8 +72,19 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-cov hio
+          pip install pytest pytest-cov
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip check
+          python - <<'PYTHON'  # Verify the pinned version and exclusive hio import ownership.
+          from importlib import metadata
+
+          assert metadata.version("gleif_hio") == "0.6.20rc2"
+          providers = {
+              name.replace("_", "-")
+              for name in metadata.packages_distributions()["hio"]
+          }
+          assert providers == {"gleif-hio"}
+          PYTHON
       - name: Run core KERI tests
         run: |
           pytest --cov=./ --cov-report=xml
@@ -82,8 +104,19 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-cov hio pytest-shell
+          pip install pytest pytest-cov pytest-shell
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip check
+          python - <<'PYTHON'  # Verify the pinned version and exclusive hio import ownership.
+          from importlib import metadata
+
+          assert metadata.version("gleif_hio") == "0.6.20rc2"
+          providers = {
+              name.replace("_", "-")
+              for name in metadata.packages_distributions()["hio"]
+          }
+          assert providers == {"gleif-hio"}
+          PYTHON
       - name: Run KERI kli tests
         run: |
           ./scripts/demo/test_scripts.sh
