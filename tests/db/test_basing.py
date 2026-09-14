@@ -31,6 +31,22 @@ from keri.help.helping import datify, dictify
 from tests.app import openMultiSig  # this breaks when running as __main__
 
 
+def test_reopen_older_database(tmp_path, monkeypatch):
+    """Development runtime versions must support the older-database check."""
+    monkeypatch.setattr(Baser, "HeadDirPath", str(tmp_path))
+    db = Baser(name="older-version", reopen=True)
+    try:
+        db.version = "1.2.14"
+        # This database has already completed the latest schema migration.
+        db.migs.pin(keys=(basing.MIGRATIONS[-1][1][-1],), val=coring.Dater())
+        db.close()
+        db.reopen()
+        assert db.current
+        assert db.version == "1.2.14"
+    finally:
+        db.close()
+
+
 def test_baser():
     """
     Test Baser class
