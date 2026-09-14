@@ -8,7 +8,7 @@ simple direct mode demo support classes
 import itertools
 from hio.base import doing
 
-from .. import help
+from .. import help, kering
 from ..core import eventing, routing
 from ..core import parsing
 from ..vdr.eventing import Tevery
@@ -268,6 +268,7 @@ class Reactor(doing.DoDoer):
             yield tock
         return False  # should never get here except forced close
 
+
     def escrowDo(self, tymth=None, tock=0.0, **opts):
         """
          Returns doifiable Doist compatibile generator method (doer dog) to process
@@ -310,6 +311,11 @@ class Directant(doing.DoDoer):
     Responds to initiated connections from a remote Director by creating and
     running a Reactant per connection. Each Reactant has TCP remoter.
 
+    Receive cutoff starts a bounded drain of accepted input and generated
+    responses. Teardown waits for parser, response producer and transmit buffer
+    settlement, or records terminal send failure/deadline expiry. This is local
+    settlement, not proof of peer processing or durable storage.
+
     Directant Subclass of DoDoer with doers list from do generator methods:
         .serviceDo
 
@@ -332,6 +338,8 @@ class Directant(doing.DoDoer):
         .hab is Habitat instance of local controller's context
         .server is TCP client instance. Assumes operated by another doer.
         .rants is dict of Reactants indexed by connection address
+        .drainTymeout is finite positive whole-drain duration, independent of idle timeout
+        .drainStops maps connection addresses to absolute, non-refreshing deadlines
 
     Inherited Properties:
         .tyme is float relative cycle time of associated Tymist .tyme obtained
@@ -364,7 +372,10 @@ class Directant(doing.DoDoer):
        ._tock is hidden attribute for .tock property
     """
 
-    def __init__(self, hab, server, verifier=None, exchanger=None, doers=None, **kwa):
+    DrainTymeout = 30.0  # force TCP teardown, bounding txbs drain after peer/local EOF
+
+    def __init__(self, hab, server, verifier=None, exchanger=None, doers=None,
+                 drainTymeout=None, **kwa):
         """
         Initialize instance.
 
@@ -376,12 +387,18 @@ class Directant(doing.DoDoer):
             db is database instance of local controller's context
             verifier (optional) is Verifier instance of local controller's TEL context
             server is TCP Server instance
+            drainTymeout is finite positive whole-drain duration; defaults to 30 seconds
         """
         self.hab = hab
         self.verifier = verifier
         self.exchanger = exchanger
         self.server = server  # use server for cx
         self.rants = dict()
+        self.drainTymeout = (float(drainTymeout) if drainTymeout is not None
+                             else self.DrainTymeout)
+        if not 0.0 < self.drainTymeout < float("inf"):
+            raise ValueError("drainTymeout must be finite and positive")
+        self.drainStops = dict()
         doers = doers if doers is not None else []
         doers.extend([doing.doify(self.serviceDo)])
         super(Directant, self).__init__(doers=doers, **kwa)
@@ -421,9 +438,29 @@ class Directant(doing.DoDoer):
         yield  # enter context
         while True:
             for ca, ix in list(self.server.ixes.items()):
-                if ix.cutoff:
+                if not ix.cutoff:
+                    if ix.txCutoff:
+                        # Sending is terminal. Accept any bytes already waiting
+                        # at the socket before closing the receive direction.
+                        ix.serviceReceives()
+                        ix.shutdownReceive()
+                    elif ix.tymeout > 0.0 and ix.tymer.expired:
+                        # Receive once before enforcing inactivity so bytes at
+                        # the boundary may refresh the Remoter timer.
+                        ix.serviceReceives()
+                        if not ix.cutoff and ix.tymer.expired:
+                            ix.shutdownReceive()
+
+                if ca not in self.rants and ix.cutoff and not ix.rxbs:
+                    if ix.txbs:
+                        reason = ("transmit cutoff" if ix.txCutoff else
+                                  "queued output without Reactant")
+                        self._logDrainFailure(ca=ca, ix=ix, reason=reason)
                     self.closeConnection(ca)
                     continue
+
+                if ix.cutoff and ca not in self.drainStops:
+                    self.drainStops[ca] = self.tyme + self.drainTymeout
 
                 if ca not in self.rants:  # create Reactant and extend doers with it
                     rant = Reactant(tymth=self.tymth, hab=self.hab, verifier=self.verifier,
@@ -432,21 +469,56 @@ class Directant(doing.DoDoer):
                     # add Reactant (rant) doer to running doers
                     self.extend(doers=[rant])  # open and run rant as doer
 
-                if ix.tymeout > 0.0 and ix.tymer.expired:
-                    self.closeConnection(ca)  # also removes rant
+                if ix.cutoff:
+                    rant = self.rants[ca]
+                    rxSettled = rant.rxDrained or rant.rxFailed
+                    outputDrained = rant.responseSettled and not ix.txbs
+                    deadlineExpired = self.tyme >= self.drainStops[ca]
+
+                    if rxSettled and outputDrained:
+                        self.closeConnection(ca)
+                    elif rxSettled and ix.txCutoff:
+                        self._logDrainFailure(ca=ca, ix=ix, rant=rant,
+                                              reason="transmit cutoff")
+                        self.closeConnection(ca)
+                    elif deadlineExpired:
+                        self._logDrainFailure(ca=ca, ix=ix, rant=rant,
+                                              reason="drain deadline expired")
+                        self.closeConnection(ca)
 
             yield
+
+    @staticmethod
+    def _logDrainFailure(ca, ix, reason, rant=None):
+        """Log application and transport work abandoned by terminal close.
+
+        Parameters:
+            ca: Connection address used by ``server.ixes``.
+            ix: Remoter whose accepted or queued bytes are being abandoned.
+            reason: Stable human-readable terminal close reason.
+            rant: Optional Reactant containing parser and producer state.
+        """
+        logger.error("Closing direct connection %s after %s; "
+                     "rxbs=%d, messageInProgress=%s, responseSettled=%s, "
+                     "txbs=%d, txCutoff=%s",
+                     ca,
+                     reason,
+                     len(ix.rxbs),
+                     rant.messageInProgress if rant is not None else False,
+                     rant.responseSettled if rant is not None else True,
+                     len(ix.txbs),
+                     ix.txCutoff)
 
     def closeConnection(self, ca):
         """
         Close and remove connection given by ca and remove associated rant at ca.
         """
         if ca in self.server.ixes:  # remoter still there
-            self.server.ixes[ca].serviceSends()  # send final bytes to socket
-        self.server.removeIx(ca)
+            self.server.removeIx(ca)
         if ca in self.rants:  # remove rant (Reactant) if any
             self.remove([self.rants[ca]])  # close and remove rant from doers list
             del self.rants[ca]
+        self.drainStops.pop(ca, None)
 
 
 class Reactant(doing.DoDoer):
@@ -526,6 +598,9 @@ class Reactant(doing.DoDoer):
         self.verifier = verifier
         self.exchanger = exchanger
         self.remoter = remoter  # use remoter for both rx and tx
+        self.messageInProgress = False
+        self.cueInProgress = False
+        self.rxError = None
 
         doers = doers if doers is not None else []
         doers.extend([doing.doify(self.msgDo, tock=hab.tocks["reactantMsg"]),
@@ -591,12 +666,57 @@ class Reactant(doing.DoDoer):
         """
         self.wind(tymth)
         _ = (yield tock)  # enter context
-        if self.parser.ims:
+        while True:
+            while not self.parser.ims:
+                yield tock
+
             logger.info("Server %s: received:\n%s\n...\n", self.hab.name,
                         self.parser.ims[:1024])
-        done = yield from self.parser.parsator(local=True)  # process messages continuously
-        return done  # should nover get here except forced close
+            # Track consumed partial messages even when the shared buffer is empty.
+            messageParser = self.parser.onceParsator(local=True)
+            self.messageInProgress = True
+            try:
+                while True:
+                    try:
+                        next(messageParser)
+                    except StopIteration:
+                        break
 
+                    if self.remoter.cutoff:
+                        remaining = len(self.parser.ims)
+                        self.rxError = kering.ShortageError(
+                            f"incomplete CESR message at EOF from "
+                            f"{self.remoter.ca}; {remaining} buffered bytes remain")
+                        del self.parser.ims[:]
+                        logger.error(str(self.rxError))
+                        break
+
+                    yield tock
+            finally:
+                messageParser.close()
+                self.messageInProgress = False
+
+            yield tock
+
+    @property
+    def rxDrained(self):
+        """Whether parsing is at a successful empty message boundary.
+
+        True requires no receiver error, no message in progress, and no bytes
+        in ``parser.ims``. Directant treats this as terminal only after receive
+        closure; an open idle connection may receive more.
+        """
+        return self.rxError is None and not self.messageInProgress and not self.parser.ims
+
+    @property
+    def rxFailed(self):
+        """Whether receive closure exposed an incomplete CESR message."""
+        return self.rxError is not None
+
+    @property
+    def responseSettled(self):
+        """Whether queued and active response production is locally settled."""
+        return not self.cueInProgress and not self.kevery.cues
 
     def cueDo(self, tymth=None, tock=0.0, **opts):
         """
@@ -620,12 +740,18 @@ class Reactant(doing.DoDoer):
         self.wind(tymth)
         _ = (yield tock)  # enter context
         while True:
-            for msg in self.hab.processCuesIter(self.kevery.cues):
-                if isinstance(msg, list):
-                    msg = bytearray(itertools.chain(*msg))
+            # processCuesIter permits multiple messages per cue; the deque can
+            # be empty while its suspended iterator still owes a response.
+            self.cueInProgress = bool(self.kevery.cues)
+            try:
+                for msg in self.hab.processCuesIter(self.kevery.cues):
+                    if isinstance(msg, list):
+                        msg = bytearray(itertools.chain(*msg))
 
-                self.sendMessage(msg, label="chit or receipt or replay")
-                yield tock  # throttle just do one cue at a time
+                    self.sendMessage(msg, label="chit or receipt or replay")
+                    yield tock  # throttle just do one cue at a time
+            finally:
+                self.cueInProgress = False
             yield tock
         return False  # should never get here except forced close
 
