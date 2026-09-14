@@ -5,6 +5,7 @@ tests.db.dbing module
 """
 import json
 import os
+import uuid
 from dataclasses import dataclass, asdict
 
 import pytest
@@ -29,6 +30,21 @@ from keri.help.helping import datify, dictify
 # being a known package. Works with pytest because pytest contructs a path
 # its test runner and imports the tests explicity
 from tests.app import openMultiSig  # this breaks when running as __main__
+
+
+def test_reopen_older_database():
+    """Development runtime versions must support the older-database check."""
+    db = Baser(name=f"older-version-{uuid.uuid4().hex}", reopen=True)
+    try:
+        db.version = "1.2.14"
+        # This database has already completed the latest schema migration.
+        db.migs.pin(keys=(basing.MIGRATIONS[-1][1][-1],), val=coring.Dater())
+        db.close()
+        db.reopen()
+        assert db.current
+        assert db.version == "1.2.14"
+    finally:
+        db.close(clear=True)
 
 
 def test_baser():
