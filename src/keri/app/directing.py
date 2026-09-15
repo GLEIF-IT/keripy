@@ -8,7 +8,7 @@ simple direct mode demo support classes
 import itertools
 from hio.base import doing
 
-from .. import help
+from .. import help, kering
 from ..core import eventing, routing
 from ..core import parsing
 from ..vdr.eventing import Tevery
@@ -526,6 +526,9 @@ class Reactant(doing.DoDoer):
         self.verifier = verifier
         self.exchanger = exchanger
         self.remoter = remoter  # use remoter for both rx and tx
+        self.messageInProgress = False
+        self.cueInProgress = False
+        self.rxError = None
 
         doers = doers if doers is not None else []
         doers.extend([doing.doify(self.msgDo, tock=hab.tocks["reactantMsg"]),
@@ -591,12 +594,63 @@ class Reactant(doing.DoDoer):
         """
         self.wind(tymth)
         _ = (yield tock)  # enter context
-        if self.parser.ims:
+        # Keep serving successive messages while tracking each message separately.
+        while True:
+            while not self.parser.ims:
+                yield tock
+
             logger.info("Server %s: received:\n%s\n...\n", self.hab.name,
                         self.parser.ims[:1024])
-        done = yield from self.parser.parsator(local=True)  # process messages continuously
-        return done  # should nover get here except forced close
+            # Unlike the continuous parsator, onceParsator exposes a message boundary.
+            # Track partial messages even when parsing has emptied the receive buffer.
+            messageParser = self.parser.onceParsator(local=True)
+            self.messageInProgress = True
+            try:
+                # Resume the same message until it finishes or EOF prevents more input.
+                while True:
+                    try:
+                        next(messageParser)
+                    except StopIteration:
+                        # This message ended, including any error handled by the parser.
+                        break
 
+                    # A yield needs more input; receive cutoff means none can arrive.
+                    if self.remoter.cutoff:
+                        remaining = len(self.parser.ims)
+                        self.rxError = kering.ShortageError(
+                            f"incomplete CESR message at EOF from "
+                            f"{self.remoter.ca}; {remaining} buffered bytes remain")
+                        del self.parser.ims[:]
+                        logger.error(str(self.rxError))
+                        break
+
+                    yield tock
+            finally:
+                # Release the parser on completion, incomplete EOF, or doer cancellation.
+                messageParser.close()
+                self.messageInProgress = False
+
+            yield tock
+
+    @property
+    def rxDrained(self):
+        """Whether parsing is at a successful empty message boundary.
+
+        True requires no receiver error, no message in progress, and no bytes
+        in ``parser.ims``. This is terminal only after receive closure; an open
+        idle connection may receive more.
+        """
+        return self.rxError is None and not self.messageInProgress and not self.parser.ims
+
+    @property
+    def rxFailed(self):
+        """Whether receive closure exposed an incomplete CESR message."""
+        return self.rxError is not None
+
+    @property
+    def responseSettled(self):
+        """Whether queued and active response production is locally settled."""
+        return not self.cueInProgress and not self.kevery.cues
 
     def cueDo(self, tymth=None, tock=0.0, **opts):
         """
@@ -620,12 +674,18 @@ class Reactant(doing.DoDoer):
         self.wind(tymth)
         _ = (yield tock)  # enter context
         while True:
-            for msg in self.hab.processCuesIter(self.kevery.cues):
-                if isinstance(msg, list):
-                    msg = bytearray(itertools.chain(*msg))
+            # processCuesIter permits multiple messages per cue; the deque can
+            # be empty while its suspended iterator still owes a response.
+            self.cueInProgress = bool(self.kevery.cues)
+            try:
+                for msg in self.hab.processCuesIter(self.kevery.cues):
+                    if isinstance(msg, list):
+                        msg = bytearray(itertools.chain(*msg))
 
-                self.sendMessage(msg, label="chit or receipt or replay")
-                yield tock  # throttle just do one cue at a time
+                    self.sendMessage(msg, label="chit or receipt or replay")
+                    yield tock  # throttle just do one cue at a time
+            finally:
+                self.cueInProgress = False
             yield tock
         return False  # should never get here except forced close
 

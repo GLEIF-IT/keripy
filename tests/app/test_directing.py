@@ -7,16 +7,34 @@ tests.db.dbing module
 import logging
 import os
 
+import pytest
+
 from hio.base import doing
 from hio.core.tcp import clienting, serving
 
 from keri import help  # logger support
-from keri import core
-from keri.core import eventing, coring
+from keri import core, kering
+from keri.core import eventing, coring, serdering
 
 from keri.app import habbing, directing
 
 from keri.demo import demoing
+
+
+@pytest.fixture()
+def directHabs():
+    """Provide temporary sender and receiver habitats for direct-mode tests."""
+    with habbing.openHab(name="alice-directing", temp=True) as (_, alice), \
+            habbing.openHab(name="bob-directing", temp=True) as (_, bob):
+        yield alice, bob
+
+
+def makeRemoter(ims=b"", *, cutoff=False):
+    """Create an accepted connection buffer for direct Reactant tests."""
+    remoter = serving.Remoter(ha=("127.0.0.1", 5632), ca=("127.0.0.1", 5633), cs=None)
+    remoter.rxbs.extend(ims)
+    remoter.cutoff = cutoff
+    return remoter
 
 
 def test_directing_basic():
@@ -158,6 +176,136 @@ def test_directing_basic():
 
     help.ogler.resetLevel(level=help.ogler.level)
     """End Test"""
+
+
+def test_reactant_drains_complete_messages_after_receive_cutoff(directHabs):
+    """Parse both buffered events after receive EOF; only the last completes RX drain.
+    Bob must advance Alice's key state through both events without receive failure.
+    This checks inbound parsing only; Bob's receipt cues are not sent to Alice.
+    """
+    alice, bob = directHabs
+
+    first = alice.makeOwnEvent(sn=0)
+    alice.interact()
+    second = alice.makeOwnEvent(sn=1)
+
+    remoter = makeRemoter(first + second, cutoff=True)
+    reactant = directing.Reactant(hab=bob, remoter=remoter)
+    dog = reactant.msgDo(tymth=lambda: 0.0, tock=0.0)
+
+    assert next(dog) == 0.0  # Prime msgDo at its enter-context yield.
+
+    assert next(dog) == 0.0  # Parse and dispatch the first buffered message.
+    assert not reactant.messageInProgress
+    assert not reactant.rxDrained  # The buffered successor still prevents drain.
+    assert reactant.kevery.kevers[alice.pre].sn == 0
+
+    assert next(dog) == 0.0  # Parse and dispatch the second buffered message.
+    assert not reactant.messageInProgress
+    assert reactant.rxDrained  # Both complete messages reached a safe EOF boundary.
+    assert not reactant.rxFailed
+    assert reactant.kevery.kevers[alice.pre].sn == 1
+    dog.close()
+
+
+def test_reactant_rejects_incomplete_message_at_receive_cutoff(directHabs):
+    """Treat EOF within a body or its attachments as incomplete-message failure.
+    Record ShortageError and discard the unusable remainder without reporting
+    successful receive drain.
+    """
+    alice, bob = directHabs
+
+    message = alice.makeOwnEvent(sn=0)
+    bodySize = serdering.SerderKERI(raw=message).size
+
+    # Exercise shortages in the body, at its boundary, and in attachments.
+    for cut in (10, bodySize, len(message) - 1):
+        remoter = makeRemoter(message[:cut], cutoff=True)
+        reactant = directing.Reactant(hab=bob, remoter=remoter)
+        dog = reactant.msgDo(tymth=lambda: 0.0, tock=0.0)
+
+        assert next(dog) == 0.0  # Prime msgDo at its enter-context yield.
+        assert next(dog) == 0.0  # Turn the parser shortage at EOF into failure.
+        assert not reactant.messageInProgress
+        assert not reactant.rxDrained
+        assert reactant.rxFailed  # Incomplete EOF is terminal, never a clean drain.
+        assert isinstance(reactant.rxError, kering.ShortageError)
+        assert "buffered bytes remain" in str(reactant.rxError)
+        assert not remoter.rxbs  # Discard the unusable suffix after recording failure.
+        dog.close()
+
+
+# False: attachments arrive later; True: receive EOF arrives before the attachments.
+@pytest.mark.parametrize("cutoff", [False, True])
+def test_reactant_tracks_consumed_partial_message(directHabs, cutoff):
+    """An empty buffer is not drained while the parser still needs attachments.
+    Supplying them completes and accepts the event; receive cutoff instead
+    fails the partial message without accepting it.
+    """
+    alice, bob = directHabs
+    message = alice.makeOwnEvent(sn=0)
+    bodySize = serdering.SerderKERI(raw=message).size
+    remoter = makeRemoter(message[:bodySize])
+    reactant = directing.Reactant(hab=bob, remoter=remoter)
+    dog = reactant.msgDo(tymth=lambda: 0.0, tock=0.0)
+    try:
+        next(dog)
+        next(dog)  # Consume the body, then wait for its attachments.
+        assert not remoter.rxbs
+        assert reactant.messageInProgress
+        assert not reactant.rxDrained
+        assert not reactant.rxFailed
+
+        if cutoff:
+            remoter.cutoff = True  # EOF makes the missing attachments unrecoverable.
+        else:
+            remoter.rxbs.extend(message[bodySize:])  # Supply the rest of the event.
+        next(dog)
+        # Both paths end parsing; only the non-cutoff case accepts the event.
+        assert not reactant.messageInProgress
+        assert reactant.rxFailed == cutoff
+        assert reactant.rxDrained == (not cutoff)
+        assert (alice.pre in bob.kevers) == (not cutoff)
+    finally:
+        dog.close()
+
+
+def test_reactant_tracks_active_response_iterator(directHabs, monkeypatch):
+    """A popped cue can still owe responses after the cue queue becomes empty.
+    Report response production complete only when its iterator finishes,
+    even though the generated bytes remain queued for transport.
+    """
+    _, bob = directHabs
+    remoter = makeRemoter()
+    reactant = directing.Reactant(hab=bob, remoter=remoter)
+
+    # Exercise the documented multiple-message-per-cue producer contract.
+    def responses(cues):
+        assert cues.pull() == {"kin": "multi"}
+        yield b"first"
+        yield b"second"
+
+    monkeypatch.setattr(bob, "processCuesIter", responses)
+    dog = reactant.cueDo(tymth=lambda: 0.0, tock=0.0)
+    try:
+        next(dog)  # Prime cueDo at its initial yield; no cues processed yet.
+        assert reactant.responseSettled
+        reactant.kevery.cues.append({"kin": "multi"})
+        assert not reactant.responseSettled
+
+        next(dog)  # Pop the cue, queue the first response, and suspend cueDo.
+        assert remoter.txbs == b"first"
+        assert not reactant.kevery.cues
+        assert not reactant.responseSettled  # The popped cue still owes output.
+        next(dog)  # Resume the same producer and queue its second response.
+        assert remoter.txbs == b"firstsecond"
+        assert not reactant.responseSettled  # Producer exhaustion is not observed yet.
+        next(dog)  # Observe producer exhaustion and clear cueInProgress.
+        assert reactant.responseSettled  # Local production, not transport drain.
+        assert remoter.txbs
+    finally:
+        dog.close()
+    assert not reactant.cueInProgress
 
 
 def test_runcontroller_demo():
