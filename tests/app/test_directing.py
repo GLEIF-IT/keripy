@@ -6,6 +6,7 @@ tests.db.dbing module
 
 import logging
 import os
+import socket
 
 import pytest
 
@@ -18,6 +19,7 @@ from keri.core import eventing, coring, serdering
 
 from keri.app import habbing, directing
 
+from keri.db import dbing
 from keri.demo import demoing
 
 
@@ -29,12 +31,40 @@ def directHabs():
         yield alice, bob
 
 
-def makeRemoter(ims=b"", *, cutoff=False):
+def makeRemoter(ims=b"", *, cutoff=False, cs=None, tymeout=None):
     """Create an accepted connection buffer for direct Reactant tests."""
-    remoter = serving.Remoter(ha=("127.0.0.1", 5632), ca=("127.0.0.1", 5633), cs=None)
+    remoter = serving.Remoter(ha=("127.0.0.1", 5632), ca=("127.0.0.1", 5633),
+                              cs=cs, tymeout=tymeout)
     remoter.rxbs.extend(ims)
     remoter.cutoff = cutoff
     return remoter
+
+
+def drainSocket(sock):
+    """Return all currently readable bytes without blocking."""
+    sock.setblocking(False)
+    received = bytearray()
+    while True:
+        try:
+            data = sock.recv(4096)
+        except BlockingIOError:
+            break
+        if not data:
+            break
+        received.extend(data)
+    return bytes(received)
+
+
+def recurUntil(doist, condition, message):
+    """Recur a bounded Doist until condition is true or its limit expires."""
+    if doist.limit is None or doist.limit <= 0.0:
+        raise ValueError("recur_until requires a positive Doist limit")
+
+    stop = doist.tyme + doist.limit
+    while not condition():
+        if doist.tyme >= stop:
+            raise AssertionError(message)
+        doist.recur()
 
 
 def test_directing_basic():
@@ -306,6 +336,188 @@ def test_reactant_tracks_active_response_iterator(directHabs, monkeypatch):
     finally:
         dog.close()
     assert not reactant.cueInProgress
+
+
+def test_directant_drains_response_after_peer_half_close(directHabs):
+    """EOF before Reactant creation must not discard Alice's buffered request.
+    Bob drains its response before closing; Alice reads and accepts Bob's receipt.
+    This proves delivery over this socket, not remote durable storage.
+    """
+    alice, bob = directHabs
+    remoterSocket, peerSocket = socket.socketpair()
+    remoter = makeRemoter(cs=remoterSocket, tymeout=1.0)
+    ca = remoter.ca
+
+    server = serving.Server(host="127.0.0.1", port=0, tymeout=1.0)
+    directant = directing.Directant(hab=bob, server=server)
+    serverDoer = serving.ServerDoer(server=server)
+    doist = doing.Doist(tock=0.03125, limit=1.0,
+                        doers=[directant, serverDoer])
+    doist.enter()
+    remoter.wind(doist.tymen())
+    server.ixes[ca] = remoter
+
+    try:
+        peerSocket.sendall(alice.makeOwnEvent(sn=0))
+        peerSocket.shutdown(socket.SHUT_WR)  # Send EOF but keep response reads open.
+        # Exercise EOF arriving before Directant creates the per-connection parser.
+        remoter.serviceReceives()
+        assert remoter.cutoff and remoter.rxbs
+
+        # Parse the request, drain its receipt, and then remove the connection.
+        recurUntil(
+            doist,
+            condition=lambda: ca not in server.ixes,
+            message="peer-half-closed connection did not drain its response",
+        )
+
+        assert alice.pre in bob.kevers  # should have processed request before close
+        response = drainSocket(peerSocket)
+        alice.psr.parse(ims=bytearray(response))  # Process Bob's inception and receipt.
+        receipts = alice.db.getVrcs(dbing.dgKey(alice.pre, alice.iserder.said))
+        assert any(bytes(receipt).startswith(bob.pre.encode()) for receipt in receipts)
+        assert not remoter.txbs  # should have drained the local response buffer
+        assert ca not in directant.rants
+        assert ca not in directant.drainStops
+    finally:
+        doist.exit()
+        peerSocket.close()
+
+
+# Neither case has a Reactant: the second adds output with no application owner.
+@pytest.mark.parametrize("queued", [b"", b"ownerless output"])
+def test_directant_closes_receive_cutoff_without_buffered_input(directHabs, queued):
+    """An EOF connection without input or a Reactant closes immediately.
+    Both an empty send buffer and unexpected ownerless output avoid a speculative
+    drain deadline; neither case has application work to supervise.
+    """
+    _, bob = directHabs
+
+    remoter = makeRemoter(cutoff=True)
+    remoter.txbs.extend(queued)
+    ca = remoter.ca
+    server = serving.Server()
+    server.ixes[ca] = remoter
+    directant = directing.Directant(hab=bob, server=server)
+    directant.wind(lambda: 0.0)
+    dog = directant.serviceDo(tymth=lambda: 0.0, tock=0.0)
+
+    next(dog)  # Prime serviceDo at its enter-context yield.
+    next(dog)  # Remove the EOF connection without creating a Reactant or deadline.
+    assert ca not in server.ixes
+    assert ca not in directant.rants
+    assert ca not in directant.drainStops  # should remove deadline bookkeeping
+
+    dog.close()
+    server.close()
+
+
+def test_directant_requires_finite_positive_drain_timeout(directHabs):
+    """Reject zero, negative, infinite and NaN drain durations.
+    Every retained EOF connection must have a finite positive lifetime bound.
+    """
+    _, bob = directHabs
+    server = serving.Server()
+
+    # A bounded drain deadline must be positive and finite.
+    for drainTymeout in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            directing.Directant(hab=bob, server=server,
+                                drainTymeout=drainTymeout)
+
+    server.close()
+
+
+def test_directant_response_drain_stops_at_absolute_deadline(
+        directHabs, monkeypatch):
+    """Partial send progress may refresh idle time but must not extend the drain deadline.
+    Simulated one-byte sends leave output pending when the absolute deadline wins;
+    removal must log the abandoned bytes and release the Reactant.
+    """
+    alice, bob = directHabs
+    remoterSocket, peerSocket = socket.socketpair()
+    remoter = makeRemoter(alice.makeOwnEvent(sn=0), cutoff=True,
+                          cs=remoterSocket, tymeout=1.0)
+
+    # Simulate one-byte writes that continually refresh HIO's idle timer.
+    def serviceOneByteAndRefreshTimer():
+        if remoter.txbs:
+            del remoter.txbs[:1]
+            remoter.refresh()
+
+    monkeypatch.setattr(remoter, "serviceSends",
+                        serviceOneByteAndRefreshTimer)
+    ca = remoter.ca
+
+    server = serving.Server(host="127.0.0.1", port=0, tymeout=1.0)
+    directant = directing.Directant(hab=bob, server=server,
+                                    drainTymeout=0.125)
+    serverDoer = serving.ServerDoer(server=server)
+    doist = doing.Doist(tock=0.03125, limit=1.0,
+                        doers=[directant, serverDoer])
+    doist.enter()
+    remoter.wind(doist.tymen())
+    server.ixes[ca] = remoter
+    errors = []
+    monkeypatch.setattr(directing.logger, "error",
+                        lambda msg, *args: errors.append(msg % args))
+
+    try:
+        # First recurrence fixes Directant's non-refreshing drain deadline.
+        doist.recur()
+        drainStop = directant.drainStops[ca]
+        transportRemaining = remoter.tymer.remaining
+
+        # Second recurrence advances output and refreshes only HIO's timer.
+        doist.recur()
+        assert directant.drainStops[ca] == drainStop  # Partial sends cannot extend drain.
+        assert remoter.tymer.remaining > transportRemaining  # HIO timer did refresh.
+
+        recurUntil(
+            doist,
+            condition=lambda: ca not in server.ixes,
+            message="blocked response did not reach its drain deadline",
+        )
+
+        assert alice.pre in bob.kevers
+        assert remoter.txbs  # Absolute deadline wins before the trickle can drain output.
+        assert any("after drain deadline expired" in error for error in errors)  # expose deadline reason
+        assert any(f"txbs={len(remoter.txbs)}" in error for error in errors)
+        assert any("txCutoff=False" in error for error in errors)
+        assert ca not in directant.rants
+        assert ca not in directant.drainStops
+    finally:
+        doist.exit()
+        peerSocket.close()
+
+
+def test_directant_peer_eof_stops_on_transmit_cutoff(directHabs, monkeypatch):
+    """After receive EOF, terminal sending must end the drain with unsent-work diagnostics.
+    Buffered input is still processed; its receipt cannot be delivered.
+    This does not exercise transmit failure initiating receive shutdown (B3).
+    """
+    alice, bob = directHabs
+    remoter = makeRemoter(alice.makeOwnEvent(sn=0), cutoff=True)
+    remoter.txCutoff = True  # Model a terminal send side after receive has ended.
+    server = serving.Server()
+    server.ixes[remoter.ca] = remoter
+    directant = directing.Directant(hab=bob, server=server)
+    doist = doing.Doist(tock=0.03125, limit=1.0, doers=[directant])
+    errors = []
+    monkeypatch.setattr(directing.logger, "error", lambda msg, *args: errors.append(msg % args))
+    doist.enter()
+    try:
+        recurUntil(doist, lambda: remoter.ca not in server.ixes,
+                   "transmit cutoff did not terminate the peer-EOF drain")
+        assert alice.pre in bob.kevers
+        assert remoter.txbs  # The generated receipt remains unsent.
+        assert any("after transmit cutoff" in error for error in errors)
+        assert any(f"txbs={len(remoter.txbs)}" in error for error in errors)
+        assert remoter.ca not in directant.rants
+        assert not directant.drainStops
+    finally:
+        doist.exit()
+        server.close()
 
 
 def test_runcontroller_demo():
