@@ -437,6 +437,18 @@ class Directant(doing.DoDoer):
         yield  # enter context
         while True:
             for ca, ix in list(self.server.ixes.items()):
+                if not ix.cutoff:
+                    if ix.txCutoff:
+                        # Sending cannot recover, but pending input still deserves parsing.
+                        ix.serviceReceives()
+                        ix.shutdownReceive()
+                    elif ix.tymeout > 0.0 and ix.tymer.expired:
+                        # Boundary input may refresh the idle timer before local shutdown.
+                        ix.serviceReceives()
+                        if not ix.cutoff and ix.tymer.expired:
+                            ix.shutdownReceive()
+
+                # Local receive shutdown uses the same bounded drain as peer EOF.
                 # Without input or a Reactant, no application work owns this connection.
                 if ca not in self.rants and ix.cutoff and not ix.rxbs:
                     if ix.txbs:
@@ -475,9 +487,6 @@ class Directant(doing.DoDoer):
                         self._logDrainFailure(ca=ca, ix=ix, rant=rant,
                                               reason="drain deadline expired")
                         self.closeConnection(ca)
-
-                elif ix.tymeout > 0.0 and ix.tymer.expired:
-                    self.closeConnection(ca)  # Preserve open-connection idle expiry.
 
             yield
 
