@@ -12,6 +12,7 @@ import socket
 
 import pytest
 
+from hio import hioing
 from hio.base import doing
 from hio.core.tcp import clienting, serving
 
@@ -525,7 +526,7 @@ def test_directant_tx_cutoff_accounts_for_unsent_response(
         directHabs, monkeypatch):
     """Terminal sending must still admit input waiting on the open receive side.
     Directant takes a final receive pass, then Bob parses the request during drain;
-    its unsendable receipt is logged, not treated as delivered.
+    its rejected response is logged separately from bytes queued before failure.
     """
     alice, bob = directHabs
     # Only Directant is scheduled: it must perform the final receive itself.
@@ -537,6 +538,7 @@ def test_directant_tx_cutoff_accounts_for_unsent_response(
         ) as doist,
     ):
         ca = remoter.ca
+        remoter.tx(b"previously queued response")  # Admitted before the send side failed.
         remoter.txCutoff = True  # Send is terminal; receive still needs final service.
         remoter.wind(doist.tymen())  # bind the remoter timer to the Doist scheduler timer
         server.ixes[ca] = remoter  # Register connection after ServerDoer has reopened the server.
@@ -559,7 +561,8 @@ def test_directant_tx_cutoff_accounts_for_unsent_response(
 
         assert alice.pre in bob.kevers  # Final receive must still process the request.
         assert remoter.cutoff  # Directant initiated receive shutdown without peer EOF.
-        assert remoter.txbs  # Receipt remains queued because send is terminal.
+        assert remoter.txbs == b"previously queued response"  # New output was rejected.
+        assert any("rejected=" in error and "rejected=0" not in error for error in errors)
         assert any("after transmit cutoff" in error for error in errors)  # expose terminal reason
         assert any(f"txbs={len(remoter.txbs)}" in error for error in errors)  # account for unsent bytes
         assert ca not in directant.rants
@@ -652,12 +655,14 @@ def test_directant_response_drain_stops_at_absolute_deadline(
         # First recurrence fixes Directant's non-refreshing drain deadline.
         doist.recur()
         drainStop = directant.drainStops[ca]
+        transportStop = doist.tyme + remoter.tymer.remaining
         transportRemaining = remoter.tymer.remaining
 
         # Second recurrence advances output and refreshes only HIO's timer.
         doist.recur()
         assert directant.drainStops[ca] == drainStop  # Partial sends cannot extend drain.
-        assert remoter.tymer.remaining > transportRemaining  # HIO timer did refresh.
+        assert doist.tyme + remoter.tymer.remaining > transportStop  # rc3 restarts idle time from now.
+        assert remoter.tymer.remaining == transportRemaining  # Same duration after each tick.
 
         recurUntil(
             doist,
@@ -675,12 +680,13 @@ def test_directant_response_drain_stops_at_absolute_deadline(
 
 
 def test_directant_peer_eof_stops_on_transmit_cutoff(directHabs, monkeypatch):
-    """After receive EOF, terminal sending must end the drain with unsent-work diagnostics.
-    Buffered input is still processed; its receipt cannot be delivered.
-    This does not exercise transmit failure initiating receive shutdown (B3).
+    """After receive EOF, reject new responses and account for previously queued bytes.
+    Buffered input still parses; terminal sending ends the drain with diagnostics.
+    Transmit failure initiating receive shutdown is covered separately.
     """
     alice, bob = directHabs
     remoter = makeRemoter(alice.makeOwnEvent(sn=0), cutoff=True)
+    remoter.tx(b"previously queued response")  # Preserve admitted output across failure.
     remoter.txCutoff = True  # Model a terminal send side after receive has ended.
     server = serving.Server()
     server.ixes[remoter.ca] = remoter
@@ -694,11 +700,49 @@ def test_directant_peer_eof_stops_on_transmit_cutoff(directHabs, monkeypatch):
         recurUntil(doist, lambda: remoter.ca not in server.ixes,
                    "transmit cutoff did not terminate the peer-EOF drain")
         assert alice.pre in bob.kevers
-        assert remoter.txbs  # The generated receipt remains unsent.
+        assert remoter.txbs == b"previously queued response"  # Receipt admission was rejected.
+        assert any("rejected=" in error and "rejected=0" not in error for error in errors)
         assert any("after transmit cutoff" in error for error in errors)
         assert any(f"txbs={len(remoter.txbs)}" in error for error in errors)
         assert remoter.ca not in directant.rants
         assert not directant.drainStops
+
+
+# With an existing transport error, rejection must retain that original cause.
+@pytest.mark.parametrize("priorFailure", [False, True])
+def test_reactor_logs_response_rejected_after_transmit_cutoff(
+        directHabs, monkeypatch, priorFailure):
+    """A terminal client rejects response admission without escaping the Reactor.
+    Log the rejected byte count and preserve an earlier transport error, if any;
+    bytes admitted before failure remain queued and no success is logged.
+    """
+    alice, _ = directHabs
+    with closing(clienting.Client(host="127.0.0.1", port=5631)) as client:
+        reactor = directing.Reactor(hab=alice, client=client)
+        client.tx(b"previously queued response")
+        client.txCutoff = True
+        cause = OSError("original send failure") if priorFailure else None
+        client.error = cause  # Otherwise rc3 records the admission error itself.
+        errors, infos = [], []
+        monkeypatch.setattr(directing.logger, "error",
+                            lambda msg, *args: errors.append(msg % args))
+        monkeypatch.setattr(directing.logger, "info",
+                            lambda msg, *args: infos.append(msg % args))
+        msg = alice.makeOwnInception()
+
+        reactor.sendMessage(msg, label="receipt")
+
+        assert client.txbs == b"previously queued response"
+        assert len(errors) == 1
+        assert "after transmit cutoff" in errors[0]
+        assert f"rejected={len(msg)}" in errors[0]
+        assert not infos  # Rejected admission must not produce the success log.
+        if priorFailure:
+            assert client.error is cause  # Do not replace the originating failure.
+            assert str(cause) in errors[0]
+        else:
+            assert isinstance(client.error, hioing.TransmitClosedError)
+            assert str(client.error) in errors[0]
 
 
 def test_runcontroller_demo():
