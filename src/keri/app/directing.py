@@ -422,6 +422,41 @@ class Directant(doing.DoDoer):
         self.server.wind(tymth)
 
 
+    def recur(self, tyme, deeds=None):
+        """Reconcile HIO's connection registry before scheduling application children."""
+        # HIO can remove a connection without calling Directant.closeConnection.
+        # Retire its child before that child can process more buffered input.
+        self._reconcileStaleReactants()
+        return super(Directant, self).recur(tyme=tyme, deeds=deeds)
+
+    def _reconcileStaleReactants(self):
+        """Remove Reactants whose exact Remoter is no longer registered with HIO.
+
+        Bounded draining assumes the Remoter remains registered. HIO may remove
+        a failed transport or replace it at the same address without Directant
+        cleanup, leaving the old Reactant and drain deadline behind.
+
+        Log remaining work and retire the stale child rather than continue
+        processing an unregistered connection. Leave any replacement Remoter
+        untouched so serviceDo can create its own Reactant.
+        """
+        for ca, rant in list(self.rants.items()):
+            if self.server.ixes.get(ca) is rant.remoter:
+                continue
+
+            ix = rant.remoter
+            if (ix.rxbs or ix.txbs or rant.messageInProgress or
+                    not rant.responseSettled):
+                self._logDrainFailure(ca=ca, ix=ix, rant=rant,
+                                      reason="transport removed connection")
+
+            # closeConnection(ca) would also close a replacement at this address.
+            # Only the stale application child and its deadline belong to us here.
+            self.remove([rant])
+            del self.rants[ca]
+            self.drainStops.pop(ca, None)
+
+
     def serviceDo(self, tymth=None, tock=0.0, **opts):
         """
         Returns doifiable Doist compatibile generator method (doer dog) to service

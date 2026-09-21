@@ -442,6 +442,67 @@ def test_directant_closes_receive_cutoff_without_buffered_input(directHabs, queu
     server.close()
 
 
+# Removal leaves the address vacant; replacement reuses it with a different Remoter.
+@pytest.mark.parametrize("replace", [False, True])
+def test_directant_reconciles_transport_removed_reactant(directHabs, monkeypatch, replace):
+    """Remove a stale Reactant and deadline before it can parse more buffered input.
+    Model HIO removal during a drain; optionally reuse the same address and prove
+    that the replacement socket survives and receives its own Reactant.
+    """
+    alice, bob = directHabs
+    replacementSocket, replacementPeer = socket.socketpair()
+    with (
+        replacementSocket, replacementPeer,
+        openTcpPair(tymeout=1.0) as (server, remoter, peerSocket),
+        openDoist(
+            doers=[directant := directing.Directant(hab=bob, server=server)],
+            tock=0.03125, limit=1.0,
+        ) as doist,
+    ):
+        ca = remoter.ca
+        remoter.wind(doist.tymen())
+        server.ixes[ca] = remoter
+        errors = []
+        monkeypatch.setattr(directing.logger, "error",
+                            lambda msg, *args: errors.append(msg % args))
+
+        doist.recur()  # Create the original Reactant while the transport is open.
+        oldRant = directant.rants[ca]
+        pending = b"pending response"
+        oldRant.sendMessage(pending)
+        remoter.cutoff = True
+        doist.recur()  # Retain the queued output under an absolute drain deadline.
+        assert ca in directant.drainStops
+
+        # Accepted input remains buffered when HIO removes the failed transport.
+        message = alice.makeOwnEvent(sn=0)
+        remoter.rxbs.extend(message)
+        server.removeIx(ca)  # HIO's removal path does not notify Directant.
+        if replace:
+            replacement = makeRemoter(cs=replacementSocket, tymeout=1.0)
+            replacement.wind(doist.tymen())
+            server.ixes[ca] = replacement  # Same address, different connection owner.
+
+        doist.recur()  # Reconcile before either serviceDo or the stale child runs.
+        assert oldRant not in directant.doers
+        assert all(doer is not oldRant for _, _, doer in directant.deeds)
+        assert not oldRant.deeds  # The child's generators were closed, not just unlisted.
+        assert ca not in directant.drainStops
+        assert alice.pre not in bob.kevers  # Stale input must not reach the KERI parser.
+        assert remoter.rxbs == message
+        assert any("after transport removed connection" in error for error in errors)
+        assert any(f"rxbs={len(message)}" in error and f"txbs={len(pending)}" in error for error in errors)
+        if replace:
+            assert server.ixes[ca] is replacement
+            assert directant.rants[ca] is not oldRant
+            assert directant.rants[ca].remoter is replacement
+            assert replacement.cs.fileno() >= 0  # Cleanup must not close the new socket.
+            assert not replacement.cutoff and not replacement.txCutoff
+        else:
+            assert ca not in server.ixes  # No replacement means no connection or child.
+            assert ca not in directant.rants
+
+
 def test_directant_requires_finite_positive_drain_timeout(directHabs):
     """Reject zero, negative, infinite and NaN drain durations.
     Every retained EOF connection must have a finite positive lifetime bound.
