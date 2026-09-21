@@ -7,6 +7,7 @@ simple indirect mode demo support classes
 """
 import datetime
 import json
+import math
 
 import falcon
 import time
@@ -36,11 +37,16 @@ from ..metric import EscrowEnd
 
 logger = help.ogler.getLogger()
 
+HttpTimeout = 30.0
+
 
 def setupWitness(hby, alias="witness", mbx=None, aids=None, tcpPort=5631, httpPort=5632,
-                 keypath=None, certpath=None, cafilepath=None):
+                 keypath=None, certpath=None, cafilepath=None, httpTimeout=HttpTimeout):
     """
-    Setup witness controller and doers
+    Setup witness controller and doers.
+
+    httpTimeout is the HTTP/HTTPS connection idle timeout in seconds; zero
+    disables idle expiry. It does not configure the separate raw TCP listener.
 
     """
     host = "0.0.0.0"
@@ -99,7 +105,8 @@ def setupWitness(hby, alias="witness", mbx=None, aids=None, tcpPort=5631, httpPo
     klogEnd = KeyLogEnd(hab=hab)
     app.add_route("/log", klogEnd)
 
-    server = createHttpServer(host, httpPort, app, keypath, certpath, cafilepath)
+    server = createHttpServer(host, httpPort, app, keypath, certpath, cafilepath,
+                              httpTimeout=httpTimeout)
     if not server.reopen():
         raise RuntimeError(f"cannot create http server on port {httpPort}")
     httpServerDoer = http.ServerDoer(server=server)
@@ -124,7 +131,8 @@ def setupWitness(hby, alias="witness", mbx=None, aids=None, tcpPort=5631, httpPo
     return doers
 
 
-def createHttpServer(host, port, app, keypath=None, certpath=None, cafilepath=None):
+def createHttpServer(host, port, app, keypath=None, certpath=None, cafilepath=None,
+                     httpTimeout=HttpTimeout):
     """
     Create an HTTP or HTTPS server depending on whether TLS key material is present
     Parameters:
@@ -134,18 +142,25 @@ def createHttpServer(host, port, app, keypath=None, certpath=None, cafilepath=No
         keypath (string)   : the file path to the TLS private key
         certpath (string)  : the file path to the TLS signed certificate (public key)
         cafilepath (string): the file path to the TLS CA certificate chain file
+        httpTimeout (float): finite nonnegative idle seconds; default 30, zero disables expiry
     Returns:
         hio.core.http.Server
     """
+    httpTimeout = float(httpTimeout)
+    if not math.isfinite(httpTimeout) or httpTimeout < 0.0:
+        raise ValueError("httpTimeout must be finite and nonnegative")
+
     if keypath is not None and certpath is not None and cafilepath is not None:
+        # HTTP does not override the timeout of an explicitly supplied TLS servant.
         servant = tcp.ServerTls(certify=False,
                                 keypath=keypath,
                                 certpath=certpath,
                                 cafilepath=cafilepath,
-                                port=port)
+                                port=port,
+                                tymeout=httpTimeout)
         server = http.Server(host=host, port=port, app=app, servant=servant)
     else:
-        server = http.Server(host=host, port=port, app=app)
+        server = http.Server(host=host, port=port, app=app, tymeout=httpTimeout)
     return server
 
 
