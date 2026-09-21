@@ -37,7 +37,7 @@ jobs:
           python - <<'PYTHON'  # Verify the pinned version and exclusive hio import ownership.
           from importlib import metadata
 
-          assert metadata.version("gleif_hio") == "0.6.20rc2"
+          assert metadata.version("gleif_hio") == "0.6.20rc3"
           providers = {
               name.replace("_", "-")
               for name in metadata.packages_distributions()["hio"]
@@ -78,7 +78,7 @@ jobs:
           python - <<'PYTHON'  # Verify the pinned version and exclusive hio import ownership.
           from importlib import metadata
 
-          assert metadata.version("gleif_hio") == "0.6.20rc2"
+          assert metadata.version("gleif_hio") == "0.6.20rc3"
           providers = {
               name.replace("_", "-")
               for name in metadata.packages_distributions()["hio"]
@@ -110,7 +110,7 @@ jobs:
           python - <<'PYTHON'  # Verify the pinned version and exclusive hio import ownership.
           from importlib import metadata
 
-          assert metadata.version("gleif_hio") == "0.6.20rc2"
+          assert metadata.version("gleif_hio") == "0.6.20rc3"
           providers = {
               name.replace("_", "-")
               for name in metadata.packages_distributions()["hio"]

@@ -6,6 +6,7 @@ keri.app.directing module
 simple direct mode demo support classes
 """
 import itertools
+from hio import hioing
 from hio.base import doing
 
 from .. import help, kering
@@ -300,7 +301,15 @@ class Reactor(doing.DoDoer):
         """
         Sends message msg and loggers label if any
         """
-        self.client.tx(msg)  # send to remote
+        try:
+            self.client.tx(msg)  # Queue locally; admission is not delivery.
+        except hioing.TransmitClosedError as ex:
+            # rc3 rejects new output after terminal send; keep the scheduler alive
+            # and account for bytes that never entered the transport buffer.
+            error = self.client.error if self.client.error is not None else ex
+            logger.error("Client %s could not queue %s after transmit cutoff; "
+                         "rejected=%d: %s", self.hab.name, label, len(msg), error)
+            return
         logger.info("%s sent %s:\n%s\n\n", self.hab.name, label, bytes(msg))
 
 
@@ -797,7 +806,15 @@ class Reactant(doing.DoDoer):
         """
         Sends message msg and loggers label if any
         """
-        self.remoter.tx(msg)  # send to remote
+        try:
+            self.remoter.tx(msg)  # Queue locally; admission is not delivery.
+        except hioing.TransmitClosedError as ex:
+            # rc3 rejects new output after terminal send; keep the scheduler alive
+            # and account for bytes that never entered the transport buffer.
+            error = self.remoter.error if self.remoter.error is not None else ex
+            logger.error("Server %s could not queue %s after transmit cutoff; "
+                         "rejected=%d: %s", self.hab.name, label, len(msg), error)
+            return
         logger.info("Server %s: sent %s:\n%d\n\n", self.hab.name,
                     label, len(msg))
 
