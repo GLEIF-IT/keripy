@@ -4,6 +4,8 @@ tests.db.dbing module
 
 """
 
+from contextlib import closing, contextmanager
+
 import logging
 import os
 import socket
@@ -38,6 +40,36 @@ def makeRemoter(ims=b"", *, cutoff=False, cs=None, tymeout=None):
     remoter.rxbs.extend(ims)
     remoter.cutoff = cutoff
     return remoter
+
+
+@contextmanager
+def openTcpPair(ims=b"", *, tymeout=None):
+    """Own a Server, a socket-backed Remoter, and its peer for one test.
+    Simulates the normal HIO management of TCP connections that are consumed and
+    supervised by KERIpy components like Director and Reactant.
+
+    The caller registers and winds the Remoter after scheduler entry, since
+    ServerDoer.enter() reopens the server and closes existing connections.
+    """
+    remoterSocket, peerSocket = socket.socketpair()
+    with remoterSocket, peerSocket:
+        remoter = makeRemoter(ims, cs=remoterSocket, tymeout=tymeout)
+        server = serving.Server(host="127.0.0.1", port=0, tymeout=tymeout)
+        try:
+            yield server, remoter, peerSocket
+        finally:
+            server.close()
+
+
+@contextmanager
+def openDoist(*, doers, tock, limit):
+    """Enter a manually driven Doist and guarantee scheduler cleanup."""
+    doist = doing.Doist(doers=doers, tock=tock, limit=limit)
+    try:
+        doist.enter()
+        yield doist
+    finally:
+        doist.exit()
 
 
 def drainSocket(sock):
@@ -344,20 +376,20 @@ def test_directant_drains_response_after_peer_half_close(directHabs):
     This proves delivery over this socket, not remote durable storage.
     """
     alice, bob = directHabs
-    remoterSocket, peerSocket = socket.socketpair()
-    remoter = makeRemoter(cs=remoterSocket, tymeout=1.0)
-    ca = remoter.ca
+    with (
+        openTcpPair(tymeout=1.0) as (server, remoter, peerSocket),
+        openDoist(
+            doers=[
+                directant := directing.Directant(hab=bob, server=server),
+                serving.ServerDoer(server=server),
+            ],
+            tock=0.03125, limit=1.0,
+        ) as doist,
+    ):
+        ca = remoter.ca
+        remoter.wind(doist.tymen())
+        server.ixes[ca] = remoter  # Register after ServerDoer has reopened the server.
 
-    server = serving.Server(host="127.0.0.1", port=0, tymeout=1.0)
-    directant = directing.Directant(hab=bob, server=server)
-    serverDoer = serving.ServerDoer(server=server)
-    doist = doing.Doist(tock=0.03125, limit=1.0,
-                        doers=[directant, serverDoer])
-    doist.enter()
-    remoter.wind(doist.tymen())
-    server.ixes[ca] = remoter
-
-    try:
         peerSocket.sendall(alice.makeOwnEvent(sn=0))
         peerSocket.shutdown(socket.SHUT_WR)  # Send EOF but keep response reads open.
         # Exercise EOF arriving before Directant creates the per-connection parser.
@@ -379,9 +411,6 @@ def test_directant_drains_response_after_peer_half_close(directHabs):
         assert not remoter.txbs  # should have drained the local response buffer
         assert ca not in directant.rants
         assert ca not in directant.drainStops
-    finally:
-        doist.exit()
-        peerSocket.close()
 
 
 # Neither case has a Reactant: the second adds output with no application owner.
@@ -435,23 +464,27 @@ def test_directant_timeout_services_boundary_input_before_drain(directHabs):
     """
     alice, bob = directHabs
     message = alice.makeOwnEvent(sn=0)
+
+    # split message into two so it arrives across two ticks to test receive of second half refreshes remoter.tymer
     split = len(message) // 2
+    msgFirstHalf = message[:split]
+    msgSecondHalf = message[split:]
 
-    remoterSocket, peerSocket = socket.socketpair()
-    remoter = makeRemoter(message[:split], cs=remoterSocket,
-                          tymeout=0.0625)  # two hio ticks timeout
-    ca = remoter.ca
+    # Two scheduler ticks until idle expiry.
+    with (
+        openTcpPair(msgFirstHalf, tymeout=0.0625) as (server, remoter, peerSocket),
+        openDoist(
+            doers=[
+                directant := directing.Directant(hab=bob, server=server),
+                serving.ServerDoer(server=server),
+            ],
+            tock=0.03125, limit=1.0,
+        ) as doist,
+    ):
+        ca = remoter.ca
+        remoter.wind(doist.tymen())  # bind the remoter timer to the Doist scheduler timer
+        server.ixes[ca] = remoter  # Register connection after ServerDoer has reopened the server.
 
-    server = serving.Server(host="127.0.0.1", port=0, tymeout=0.0625)
-    directant = directing.Directant(hab=bob, server=server)
-    serverDoer = serving.ServerDoer(server=server)
-    doist = doing.Doist(tock=0.03125, limit=1.0,
-                        doers=[directant, serverDoer])
-    doist.enter()
-    remoter.wind(doist.tymen())
-    server.ixes[ca] = remoter
-
-    try:
         # First recurrence creates the Reactant.
         doist.recur()  # time accumulated = 1 tick or 0.03125
         assert ca in directant.rants
@@ -463,7 +496,7 @@ def test_directant_timeout_services_boundary_input_before_drain(directHabs):
         assert rant.messageInProgress
 
         # Final receive refreshes HIO's timer instead of closing at the boundary.
-        peerSocket.sendall(message[split:])
+        peerSocket.sendall(msgSecondHalf)
         doist.recur()
         assert not remoter.cutoff  # Boundary input refreshed the timer before shutdown.
         assert not remoter.tymer.expired
@@ -486,9 +519,6 @@ def test_directant_timeout_services_boundary_input_before_drain(directHabs):
         assert not remoter.txbs
         assert ca not in directant.rants
         assert ca not in directant.drainStops
-    finally:
-        doist.exit()
-        peerSocket.close()
 
 
 def test_directant_tx_cutoff_accounts_for_unsent_response(
@@ -498,23 +528,24 @@ def test_directant_tx_cutoff_accounts_for_unsent_response(
     its unsendable receipt is logged, not treated as delivered.
     """
     alice, bob = directHabs
-    remoterSocket, peerSocket = socket.socketpair()
-    remoter = makeRemoter(cs=remoterSocket, tymeout=1.0)
-    remoter.txCutoff = True  # Send is terminal; receive still needs final service.
-    ca = remoter.ca
+    # Only Directant is scheduled: it must perform the final receive itself.
+    with (
+        openTcpPair(tymeout=1.0) as (server, remoter, peerSocket),
+        openDoist(
+            doers=[directant := directing.Directant(hab=bob, server=server, drainTymeout=0.25)],
+            tock=0.03125, limit=1.0,
+        ) as doist,
+    ):
+        ca = remoter.ca
+        remoter.txCutoff = True  # Send is terminal; receive still needs final service.
+        remoter.wind(doist.tymen())  # bind the remoter timer to the Doist scheduler timer
+        server.ixes[ca] = remoter  # Register connection after ServerDoer has reopened the server.
 
-    server = serving.Server()
-    server.ixes[ca] = remoter
-    directant = directing.Directant(hab=bob, server=server,
-                                    drainTymeout=0.25)
-    # Directant must consume socket input and account for its unsendable receipt.
-    doist = doing.Doist(tock=0.03125, limit=1.0, doers=[directant])
-    doist.enter()
-    errors = []
-    monkeypatch.setattr(directing.logger, "error",
-                        lambda msg, *args: errors.append(msg % args))
+        # monkeypatch logging so we can make easy assertions on log messages later
+        errors = []
+        monkeypatch.setattr(directing.logger, "error",
+                            lambda msg, *args: errors.append(msg % args))
 
-    try:
         # Leave input in the kernel buffer for Directant's txCutoff receive pass.
         peerSocket.sendall(alice.makeOwnEvent(sn=0))
         assert not remoter.cutoff
@@ -533,10 +564,6 @@ def test_directant_tx_cutoff_accounts_for_unsent_response(
         assert any(f"txbs={len(remoter.txbs)}" in error for error in errors)  # account for unsent bytes
         assert ca not in directant.rants
         assert ca not in directant.drainStops
-    finally:
-        doist.exit()
-        server.close()
-        peerSocket.close()
 
 
 def test_directant_idle_expiry_ends_incomplete_request(directHabs):
@@ -547,22 +574,26 @@ def test_directant_idle_expiry_ends_incomplete_request(directHabs):
     alice, bob = directHabs
     message = alice.makeOwnEvent(sn=0)
     bodySize = serdering.SerderKERI(raw=message).size
-    remoterSocket, peerSocket = socket.socketpair()
-    remoter = makeRemoter(message[:bodySize], cs=remoterSocket, tymeout=0.0625)
-    ca = remoter.ca
-    server = serving.Server()
-    server.ixes[ca] = remoter
-    directant = directing.Directant(hab=bob, server=server)
-    doist = doing.Doist(tock=0.03125, limit=1.0, doers=[directant])
-    doist.enter()
+    partialMsg = message[:bodySize]  # will only send the body, no attachments, causing shortage error
 
-    try:
+    shortTimeout = 0.0625  # two-tick timeout to cause remoter.tymer expiry after two doist.recur() calls
+    with (
+        openTcpPair(partialMsg, tymeout=shortTimeout) as (server, remoter, peerSocket),
+        openDoist(
+            doers=[directant := directing.Directant(hab=bob, server=server)],
+            tock=0.03125, limit=1.0,
+        ) as doist,
+    ):
+        ca = remoter.ca
+        remoter.wind(doist.tymen())  # bind the remoter timer to the Doist scheduler timer
+        server.ixes[ca] = remoter  # Register connection after ServerDoer has reopened the server.
+
         doist.recur()  # Create the Reactant while the idle timer is still running.
         rant = directant.rants[ca]
         doist.recur()  # Consume the body and wait for attachments at idle expiry.
-        assert remoter.tymer.expired
+        assert remoter.tymer.expired  # timeout occurs after two .recurs due to short timeout
         assert rant.messageInProgress
-        assert not remoter.rxbs  # An empty buffer does not mean parsing is complete.
+        assert not remoter.rxbs  # An empty buffer does not mean parsing is complete - missing attachments
 
         doist.recur()  # No boundary input: shut down receive but retain the active parser.
         assert remoter.cutoff
@@ -578,13 +609,10 @@ def test_directant_idle_expiry_ends_incomplete_request(directHabs):
                    "idle-expired partial request did not terminate")
         assert alice.pre not in bob.kevers
         assert not remoter.txbs
+        # alice should not have received anything because bob errored on idle expiry prior to response
         assert not drainSocket(peerSocket)
         assert ca not in directant.rants
         assert ca not in directant.drainStops
-    finally:
-        doist.exit()
-        server.close()
-        peerSocket.close()
 
 
 def test_directant_response_drain_stops_at_absolute_deadline(
@@ -594,34 +622,33 @@ def test_directant_response_drain_stops_at_absolute_deadline(
     removal must log the abandoned bytes and release the Reactant.
     """
     alice, bob = directHabs
-    remoterSocket, peerSocket = socket.socketpair()
-    remoter = makeRemoter(alice.makeOwnEvent(sn=0), cutoff=True,
-                          cs=remoterSocket, tymeout=1.0)
+    with (
+        openTcpPair(alice.makeOwnEvent(sn=0), tymeout=1.0) as (server, remoter, peerSocket),
+        openDoist(
+            doers=[
+                directant := directing.Directant(hab=bob, server=server, drainTymeout=0.125),
+                serving.ServerDoer(server=server),
+            ],
+            tock=0.03125, limit=1.0,
+        ) as doist,
+    ):
+        ca = remoter.ca
+        remoter.cutoff = True  # Begin with receive EOF and a buffered request.
+        remoter.wind(doist.tymen())  # bind the remoter timer to the Doist scheduler timer
+        server.ixes[ca] = remoter  # Register after ServerDoer has reopened the server.
 
-    # Simulate one-byte writes that continually refresh HIO's idle timer.
-    def serviceOneByteAndRefreshTimer():
-        if remoter.txbs:
-            del remoter.txbs[:1]
-            remoter.refresh()
+        # Simulate one-byte writes that continually refresh HIO's idle timer.
+        def serviceOneByteAndRefreshTimer():
+            if remoter.txbs:
+                del remoter.txbs[:1]
+                remoter.refresh()
 
-    monkeypatch.setattr(remoter, "serviceSends",
-                        serviceOneByteAndRefreshTimer)
-    ca = remoter.ca
+        monkeypatch.setattr(remoter, "serviceSends",
+                            serviceOneByteAndRefreshTimer)
+        errors = []
+        monkeypatch.setattr(directing.logger, "error",
+                            lambda msg, *args: errors.append(msg % args))
 
-    server = serving.Server(host="127.0.0.1", port=0, tymeout=1.0)
-    directant = directing.Directant(hab=bob, server=server,
-                                    drainTymeout=0.125)
-    serverDoer = serving.ServerDoer(server=server)
-    doist = doing.Doist(tock=0.03125, limit=1.0,
-                        doers=[directant, serverDoer])
-    doist.enter()
-    remoter.wind(doist.tymen())
-    server.ixes[ca] = remoter
-    errors = []
-    monkeypatch.setattr(directing.logger, "error",
-                        lambda msg, *args: errors.append(msg % args))
-
-    try:
         # First recurrence fixes Directant's non-refreshing drain deadline.
         doist.recur()
         drainStop = directant.drainStops[ca]
@@ -645,9 +672,6 @@ def test_directant_response_drain_stops_at_absolute_deadline(
         assert any("txCutoff=False" in error for error in errors)
         assert ca not in directant.rants
         assert ca not in directant.drainStops
-    finally:
-        doist.exit()
-        peerSocket.close()
 
 
 def test_directant_peer_eof_stops_on_transmit_cutoff(directHabs, monkeypatch):
@@ -661,11 +685,12 @@ def test_directant_peer_eof_stops_on_transmit_cutoff(directHabs, monkeypatch):
     server = serving.Server()
     server.ixes[remoter.ca] = remoter
     directant = directing.Directant(hab=bob, server=server)
-    doist = doing.Doist(tock=0.03125, limit=1.0, doers=[directant])
     errors = []
     monkeypatch.setattr(directing.logger, "error", lambda msg, *args: errors.append(msg % args))
-    doist.enter()
-    try:
+    with (
+        closing(server),
+        openDoist(doers=[directant], tock=0.03125, limit=1.0) as doist,
+    ):
         recurUntil(doist, lambda: remoter.ca not in server.ixes,
                    "transmit cutoff did not terminate the peer-EOF drain")
         assert alice.pre in bob.kevers
@@ -674,9 +699,6 @@ def test_directant_peer_eof_stops_on_transmit_cutoff(directHabs, monkeypatch):
         assert any(f"txbs={len(remoter.txbs)}" in error for error in errors)
         assert remoter.ca not in directant.rants
         assert not directant.drainStops
-    finally:
-        doist.exit()
-        server.close()
 
 
 def test_runcontroller_demo():
