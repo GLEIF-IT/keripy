@@ -352,6 +352,10 @@ def test_launch_normalizes_loglevel(monkeypatch):
 
 
 def test_run_witness_reads_configured_aids(monkeypatch, tmp_path):
+    """Witness startup preserves configured AIDs and forwards the HTTP idle policy.
+    Inspect the real server created by runWitness/setupWitness, then let the
+    bounded controller run close its resources normally.
+    """
     monkeypatch.setenv("HOME", str(tmp_path))
 
     aids = ["BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha"]
@@ -368,6 +372,9 @@ def test_run_witness_reads_configured_aids(monkeypatch, tmp_path):
         receiptEnd = next(doer for doer in doers
                           if isinstance(doer, witness_start.indirecting.ReceiptEnd))
         spy_aids["aids"] = receiptEnd.aids
+        httpDoer = next(doer for doer in doers
+                       if isinstance(doer, witness_start.indirecting.http.ServerDoer))
+        spy_aids["httpTimeout"] = httpDoer.server.servant.tymeout
         return doers
 
     # inject spy
@@ -380,9 +387,11 @@ def test_run_witness_reads_configured_aids(monkeypatch, tmp_path):
         http = httpServer.getsockname()[1]
 
     witness_start.runWitness(name="witness-aids", alias="wit", tcp=tcp, http=http,
-                             expire=0.125, configDir=str(tmp_path), configFile="witness")
+                             expire=0.125, configDir=str(tmp_path), configFile="witness",
+                             httpTimeout=7.5)
 
     assert spy_aids["aids"] == aids
+    assert spy_aids["httpTimeout"] == 7.5
 
 
 def test_run_failure_is_logged_and_hby_closed(helpers, monkeypatch):
@@ -490,6 +499,26 @@ def test_witness_start_arg_parsing():
     assert args.loglevel == "CRITICAL"
     assert args.logdir is None
     assert args.logfile is None
+
+
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        ([], 30.0),
+        (["--http-timeout", "7.5"], 7.5),
+        (["--http-timeout", "0"], 0.0),
+    ],
+)
+def test_witness_launch_forwards_http_timeout(monkeypatch, options, expected):
+    """Forward the default, custom, or disabled HTTP idle policy from the CLI.
+    Capture the runWitness boundary; the startup test checks the real server.
+    """
+    monkeypatch.setattr(help.ogler, "level", help.ogler.level)
+    captured = {}
+    monkeypatch.setattr(witness_start, "runWitness", lambda **kwa: captured.update(kwa))
+    args = _parse(["witness", "start", "--alias", "wit", *options])
+    args.handler(args)
+    assert captured["httpTimeout"] == expected
 
 
 def test_launch_routes_logdir(monkeypatch, tmp_path):

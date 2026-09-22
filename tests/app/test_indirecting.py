@@ -3,15 +3,23 @@
 tests.app.indirecting module
 
 """
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
+import ipaddress
 import json
+import ssl
+import socket
 import time
 
 import falcon
 from falcon import testing
-import hio
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 import pytest
 
-from hio.core import http
+from hio.core import http, tcp
 from hio.base import doing, tyming
 from hio.help import decking
 
@@ -426,30 +434,131 @@ class AllowlistTestDoer(doing.Doer):
 
         return True
 
-class MockServerTls:
-    def __init__(self,  certify, keypath, certpath, cafilepath, port):
-        pass
+@pytest.fixture(scope="module")
+def witnessTlsFiles(tmp_path_factory):
+    """Create a temporary key and self-signed certificate for loopback TLS tests."""
+    path = tmp_path_factory.mktemp("witness-tls")
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.now(timezone.utc)
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)  # The test certificate signs itself.
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        # The client connects by IP, so certificate verification needs an IP SAN.
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+            ]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+
+    keypath, certpath = path / "key.pem", path / "cert.pem"
+    keypath.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    certpath.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+    # Trust this self-signed certificate when the client verifies the server.
+    return dict(
+        keypath=str(keypath),
+        certpath=str(certpath),
+        cafilepath=str(certpath),
+    )
+
+@pytest.mark.parametrize("secured", [False, True], ids=["http", "https"])
+@pytest.mark.parametrize("timeout", [None, 0.25, 0.0], ids=["default", "custom", "disabled"])
+def test_create_http_server_idle_timeout(witnessTlsFiles, secured, timeout):
+    """HTTP and HTTPS must propagate the chosen idle timeout to accepted connections.
+    Real receive activity refreshes the deadline; inactivity expires it afterward.
+    Zero disables idle expiry, while an omitted setting selects thirty seconds.
+    """
+    options = dict(witnessTlsFiles) if secured else {}
+    if timeout is not None:
+        options["httpTimeout"] = timeout  # Omission tests the public default itself.
+    expected = 30.0 if timeout is None else timeout
+    tymist = tyming.Tymist()
+    # HTTP maps port=0 to 80/443, so select an available unprivileged port first.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    clientOptions = dict(ha=("127.0.0.1", port), tymth=tymist.tymen())
+    clientType = tcp.ClientTls if secured else tcp.Client
+    if secured:
+        clientOptions.update(cafilepath=witnessTlsFiles["cafilepath"],
+                             certify=ssl.CERT_REQUIRED, hostify=True)
+
+    # create HTTP/HTTPS server and client and connect them, then perform the test
+    with (
+        closing(indirecting.createHttpServer(
+            "127.0.0.1", port, falcon.App(), **options,
+        )) as server,
+        closing(clientType(**clientOptions)) as client,
+    ):
+        # Both endpoints use the test clock; open the listener before the client.
+        server.wind(tymist.tymen())
+        assert server.reopen()
+        assert server.servant.tymeout == expected
+        assert client.reopen()
+        # Drive both sides of connection setup (including TLS) with the clock frozen.
+        for _ in range(1000):
+            client.serviceConnect()  # Initiate/advance the client's connection.
+            server.serviceConnects()  # Accept it and advance the server's handshake.
+            if client.connected and server.servant.ixes:
+                break
+        assert client.connected and len(server.servant.ixes) == 1
+        # Inspect the server-side connection: it must inherit the listener's policy.
+        ca, remoter = next(iter(server.servant.ixes.items()))
+        assert remoter.tymeout == expected
+        assert remoter.tymer.duration == expected
+
+        if expected == 0.0:
+            # No client traffic: the server must retain a connection with expiry disabled.
+            tymist.tick(60.0)
+            server.serviceConnects()  # Disabled idle expiry retains the connection.
+            assert server.servant.ixes[ca] is remoter
+            return
+
+        # Halfway to expiry, send client bytes that refresh the server's idle timer.
+        tymist.tick(expected / 2)
+        request = b"GET / HTTP/1.1\r\n"  # Leave headers incomplete; no response activity.
+        client.tx(request)
+        for _ in range(1000):
+            client.serviceSends()  # Flush the queued request onto the socket.
+            server.servant.serviceReceivesAllIx()  # Read it into the server's Remoter.
+            if remoter.rxbs == request:
+                break
+        assert remoter.rxbs == request
+        assert remoter.tymer.remaining == expected  # Receive restarts from now.
+
+        # Stop client traffic; server maintenance checks the refreshed idle deadline.
+        tymist.tick(expected / 2)
+        server.serviceConnects()  # Original deadline reached; refreshed deadline has not.
+        assert server.servant.ixes[ca] is remoter
+        tymist.tick(expected / 2)
+        server.serviceConnects()  # A full idle interval since the receive now expires.
+        assert ca not in server.servant.ixes
+        assert ca not in server.reqs
 
 
-class MockHttpServer:
-    def __init__(self, host, port, app, servant=None):
-        self.servant = servant
 
-
-def test_createHttpServer(monkeypatch):
-    host = "0.0.0.0"
-    port = 5632
-    app = falcon.App()
-    server = indirecting.createHttpServer(host, port, app)
-    assert isinstance(server, http.Server)
-
-    monkeypatch.setattr(hio.core.tcp, 'ServerTls', MockServerTls)
-    monkeypatch.setattr(hio.core.http, 'Server', MockHttpServer)
-
-    server = indirecting.createHttpServer(host, port, app, keypath='keypath', certpath='certpath', cafilepath='cafilepath')
-
-    assert isinstance(server, MockHttpServer)
-    assert isinstance(server.servant, MockServerTls)
+def test_create_http_server_rejects_invalid_idle_timeout():
+    """Reject invalid durations rather than silently disabling idle expiry."""
+    for timeout in (-1.0, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="finite and nonnegative"):
+            indirecting.createHttpServer("127.0.0.1", 5632, falcon.App(),
+                                        httpTimeout=timeout)
 
 
 def test_metrics_end():

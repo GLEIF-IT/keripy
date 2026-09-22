@@ -30,6 +30,10 @@ parser.add_argument('-H', '--http',
                     action='store',
                     default=5631,
                     help="Local port number the HTTP server listens on. Default is 5631.")
+parser.add_argument('--http-timeout', dest='httpTimeout', type=float,
+                    default=indirecting.HttpTimeout,
+                    help="HTTP/HTTPS connection idle timeout in seconds. Default is 30; "
+                         "0 disables idle expiry. Does not affect raw TCP connections.")
 parser.add_argument('-T', '--tcp',
                     action='store',
                     default=5632,
@@ -90,6 +94,7 @@ def launch(args):
                bran=args.bran,
                tcp=int(args.tcp),
                http=int(args.http),
+               httpTimeout=args.httpTimeout,
                configDir=args.configDir,
                configFile=args.configFile,
                keypath=args.keypath,
@@ -103,9 +108,9 @@ def launch(args):
 
 def runWitness(name="witness", base="", alias="witness", bran="", tcp=5631, http=5632, expire=0.0,
                configDir="", configFile="", keypath=None, certpath=None, cafilepath=None,
-               noPrompt=None):
+               noPrompt=None, httpTimeout=indirecting.HttpTimeout):
     """
-    Setup and run one witness
+    Setup and run one witness; httpTimeout controls HTTP/HTTPS idle expiry.
     """
     noPrompt = noPrompt if noPrompt is not None else not sys.stdin.isatty()  # When not TTY then do not prompt
 
@@ -142,6 +147,7 @@ def runWitness(name="witness", base="", alias="witness", bran="", tcp=5631, http
                                               aids=aids,
                                               tcpPort=tcp,
                                               httpPort=http,
+                                              httpTimeout=httpTimeout,
                                               keypath=keypath,
                                               certpath=certpath,
                                               cafilepath=cafilepath))
