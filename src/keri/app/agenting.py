@@ -973,13 +973,31 @@ class TCPStreamMessenger(doing.DoDoer):
 
 
 class HTTPMessenger(doing.DoDoer):
-    """Send CESR messages to a witness over HTTP and capture responses.
+    """Supervise CESR HTTP requests and retain their terminal outcomes.
 
-    ``sent`` is a consumable response-notification queue, so outstanding
-    requests are tracked separately in ``pending``.
+    HIO owns connection mechanics and HTTP framing. This messenger performs the
+    scheduling and socket-lifecycle role otherwise supplied by ClientDoer, so it
+    can account for complete responses before acting on connection failure and
+    stop request production during cleanup. A complete 2xx response is an HTTP
+    success, not proof of a verified witness receipt or remote durable storage.
+
+    ``sent`` is a consumable success queue. Outstanding requests remain tracked
+    in ``pending`` after failure; owners must consume failure explicitly rather
+    than infer success from scheduler completion. No request is replayed.
+
+    Attributes:
+        connectTimeout (float): finite positive initial connection budget in
+            scheduler seconds, default 30.0; includes TLS establishment and does
+            not reset when HIO reopens a socket. Ends on the first connection.
+        error (Exception | None): first terminal connection, send, or response
+            error, retained after cleanup; initially None.
+        failedResponse (Response | None): first non-2xx or errored HTTP response,
+            retained for inspection; None when no failed response was produced.
+        failed (bool): read-only property indicating whether error is retained.
     """
 
-    def __init__(self, hab, wit, url, msgs=None, sent=None, doers=None, auth=None, **kwa):
+    def __init__(self, hab, wit, url, msgs=None, sent=None, doers=None, auth=None,
+                 connectTimeout=30.0, **kwa):
         """Initialize HTTP messenger with queues and optional auth.
 
         Parameters:
@@ -989,7 +1007,14 @@ class HTTPMessenger(doing.DoDoer):
             msgs (Deck | None): outbound message queue.
             sent (Deck | None): response queue.
             auth (str | None): optional 2FA auth codes for witnesses.
+            connectTimeout (float): initial connection budget, not a send or
+                response deadline.
         """
+        self.connectTimeout = float(connectTimeout)
+        if not math.isfinite(self.connectTimeout) or self.connectTimeout <= 0.0:
+            raise ValueError("connectTimeout must be finite and positive")
+        self.error = None
+        self.failedResponse = None
         self.hab = hab
         self.wit = wit
         self.pending = 0
@@ -1003,13 +1028,12 @@ class HTTPMessenger(doing.DoDoer):
         if up.scheme != kering.Schemes.http and up.scheme != kering.Schemes.https:
             raise ValueError(f"invalid scheme {up.scheme} for HTTPMessenger")
 
-        self.client = http.clienting.Client(scheme=up.scheme, hostname=up.hostname, port=up.port)
-        clientDoer = http.clienting.ClientDoer(client=self.client)
-
-        # Queue work, service the transport, then read its current state.
-        doers.extend([doing.doify(self.msgDo),
-                      clientDoer,
-                      doing.doify(self.responseDo)])
+        self.client = http.clienting.Client(scheme=up.scheme, hostname=up.hostname,
+                                           port=up.port, redirectable=False,
+                                           reconnectable=False)
+        self._msgDo = doing.doify(self.msgDo)
+        # Admit queued work before servicing HTTP and inspecting current outcomes.
+        doers.extend([self._msgDo, doing.doify(self.responseDo)])
 
         super(HTTPMessenger, self).__init__(doers=doers, **kwa)
 
@@ -1034,17 +1058,81 @@ class HTTPMessenger(doing.DoDoer):
             yield tock
 
     def responseDo(self, tymth=None, tock=0.0, **kwa):
-        """Doer loop that processes HTTP responses from the client and adds them into `sent` cues."""
-        self.wind(tymth)
-        _ = (yield tock)
+        """Own HTTP service and cleanup, accounting for responses before failure.
 
-        while True:
-            while self.client.responses:
-                rep = self.client.respond()
-                self.sent.append(rep)
-                self.pending -= 1
-                yield
-            yield
+        Keep HIO's request/response service order and EOF framing. A completed
+        response takes precedence over a later transport failure in the same turn.
+        """
+        self.wind(tymth)
+        self.client.wind(tymth)
+        connector = self.client.connector
+        connected = False
+        stop = self.tyme + self.connectTimeout
+        try:
+            self.client.reopen()
+            _ = (yield tock)
+            while True:
+                error = None
+                try:
+                    # HIO admits requests, sends, and parses responses in its HTTP service order.
+                    self.client.service()
+                    # EOF may finish a close-delimited response or expose an
+                    # incomplete one. Let HIO settle it before classifying closure.
+                    if connector.cutoff and self.client.waited:
+                        self.client.respondent.close()
+                        self.client.serviceResponse()
+                except OSError as ex:
+                    error = connector.error or ex
+
+                # Account for completed responses before handling terminal transport state.
+                while self.client.responses:
+                    rep = self.client.respond()
+                    if rep.errored or rep.error or not 200 <= rep.status < 300:
+                        self.failedResponse = rep
+                        self._fail(connector.error or http.httping.HTTPException(
+                            rep.error or f"HTTP response status {rep.status} {rep.reason}"))
+                        return
+                    self.sent.append(rep)
+                    self.pending -= 1
+
+                # HIO may record a send failure without raising; check both reporting paths.
+                if error is not None or connector.txCutoff:
+                    self._fail(error or connector.error or hioing.TransmitClosedError(
+                        "HTTP messenger send direction is closed"))
+                    return
+                if connector.cutoff:
+                    if self.client.waited:
+                        # Resume EOF parsing next turn; HIO skips admission while receive is closed.
+                        yield tock
+                        continue
+                    self._fail(connector.error or ConnectionError(
+                        "HTTP messenger connection closed"))
+                    return
+                if not connected:
+                    connected = connector.connected
+                    if not connected and self.tyme >= stop:
+                        self._fail(TimeoutError("HTTP messenger initial connection deadline expired"))
+                        return
+                elif not connector.connected:
+                    self._fail(connector.error or ConnectionError(
+                        "HTTP messenger connection closed"))
+                    return
+                yield tock
+        except OSError as ex:
+            self._fail(connector.error or ex)
+        finally:
+            self.remove([self._msgDo])
+            self.client.close()
+
+    @property
+    def failed(self):
+        """Whether this messenger retained a terminal failure."""
+        return self.error is not None
+
+    def _fail(self, error):
+        """Retain the first error without clearing outstanding request accounting."""
+        if not self.failed:
+            self.error = error
 
     @property
     def idle(self):

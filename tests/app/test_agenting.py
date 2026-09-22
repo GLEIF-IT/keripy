@@ -399,6 +399,266 @@ def test_http_messenger_accounts_for_real_delivery():
             doist.exit()
 
 
+@pytest.fixture
+def connectedHttpMessenger():
+    """Connect a real HTTP messenger to a raw peer for response and socket tests."""
+    with habbing.openHab(name="http-outcome", temp=True) as (_, hab), socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.setblocking(False)
+        messenger = agenting.HTTPMessenger(
+            hab=hab, wit=hab.pre, url=f"http://127.0.0.1:{server.getsockname()[1]}")
+        with openDoist(doers=[messenger], tock=0.03125, limit=1.0) as doist:
+            peer = None
+            try:
+                for _ in range(100):
+                    doist.recur()  # The messenger drives its client; the fixture accepts the peer.
+                    if peer is None:
+                        try:
+                            peer, _ = server.accept()
+                            peer.setblocking(False)
+                        except BlockingIOError:
+                            pass
+                    if peer is not None and messenger.client.connector.connected:
+                        break
+                    time.sleep(0.001)  # Let the OS progress the loopback handshake.
+                assert peer is not None and messenger.client.connector.connected
+                yield messenger, peer, doist, hab
+            finally:
+                if peer is not None:
+                    peer.close()
+
+
+def sendHttpRequests(messenger, peer, doist, hab, count=1):
+    """Queue CESR requests and verify the first complete HTTP request at the peer.
+    HIO waits for its response before transmitting any later queued request.
+    """
+    for _ in range(count):
+        messenger.msgs.append(bytearray(hab.makeOwnInception()))
+    for _ in range(20):
+        doist.recur()  # msgDo queues HTTP requests; responseDo services the client.
+        if messenger.pending == count and not messenger.client.connector.txbs:
+            break
+    assert messenger.pending == count and messenger.client.waited
+    assert not messenger.client.connector.txbs
+    assert len(messenger.client.requests) == count - 1
+
+    # Empty txbs proves local drain only. Read the exact built HTTP request at
+    # the peer before it responds; a one-second wall-clock guard tolerates CI load.
+    expected = messenger.client.requester.msg
+    assert expected
+    received = bytearray()
+    deadline = time.monotonic() + 1.0
+    while len(received) < len(expected):
+        assert select.select(
+            [peer],  # Watch for read readiness without consuming bytes.
+            [],     # No write-readiness interest.
+            [],     # No exceptional-condition interest.
+            max(0.0, deadline - time.monotonic()),  # Remaining wall-clock budget.
+        )[0]  # An empty readable list means the test guard expired.
+        chunk = peer.recv(len(expected) - len(received))
+        assert chunk  # EOF before the full request is not successful delivery.
+        received.extend(chunk)
+    assert received == expected
+
+
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_http_messenger_bounds_refused_connection(scheme):
+    """Refusal terminates at an absolute scheduler deadline and retains pending work.
+    Reserving an unlistened port allows real HIO reopen attempts without a server.
+    """
+    with habbing.openHab(name="http-refused", temp=True) as (_, hab), socket.socket() as endpoint:
+        # Reserve an OS-selected port without listen(): TCP connections are refused.
+        endpoint.bind(("127.0.0.1", 0))
+        tock = 0.03125  # One tick is 1/32 of a logical scheduler second.
+        messenger = agenting.HTTPMessenger(
+            hab=hab, wit=hab.pre, url=f"{scheme}://127.0.0.1:{endpoint.getsockname()[1]}",
+            connectTimeout=4 * tock)
+        messenger.msgs.append(bytearray(hab.makeOwnInception()))
+        with openDoist(doers=[messenger], tock=tock, limit=1.0) as doist:
+            # responseDo starts its budget during scheduler entry, at this time.
+            started = doist.tyme
+            connectionDeadline = started + messenger.connectTimeout
+            guardDeadline = started + 2 * messenger.connectTimeout  # Eight-tick test guard.
+            while not messenger.done and doist.tyme <= guardDeadline:
+                doist.recur()  # HIO retries consume the same absolute connection budget.
+            assert messenger.done and isinstance(messenger.error, TimeoutError)
+            # Timeout is observed at tick 4; recur() advances to tick 5 before returning.
+            assert doist.tyme <= connectionDeadline + doist.tock
+            assert messenger.pending == 1 and not messenger.idle and not messenger.sent
+            assert messenger.client.connector.cs is None and not messenger.deeds
+
+
+def test_http_messenger_bounds_tls_handshake():
+    """A TCP peer that never answers TLS cannot bypass the initial connection budget."""
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)  # The OS can complete TCP even without an application accept().
+        tock = 0.03125
+        messenger = agenting.HTTPMessenger(
+            hab=None, wit="wit", url=f"https://127.0.0.1:{server.getsockname()[1]}",
+            connectTimeout=8 * tock)
+        with openDoist(doers=[messenger], tock=tock, limit=1.0) as doist:
+            started = doist.tyme  # Shared logical clock, not elapsed wall-clock time.
+            connectionDeadline = started + messenger.connectTimeout
+            guardDeadline = started + 2 * messenger.connectTimeout  # Sixteen-tick test guard.
+            accepted = False
+            while not messenger.done and doist.tyme <= guardDeadline:
+                doist.recur()  # TCP connects, but this raw listener never speaks TLS.
+                accepted |= messenger.client.connector.accepted
+                time.sleep(0.001)  # Let the OS progress TCP; this is not the TLS deadline.
+            assert accepted and messenger.done
+            assert isinstance(messenger.error, TimeoutError)
+            # The eighth-tick timeout is observed after recur() advances to tick 9.
+            assert doist.tyme <= connectionDeadline + doist.tock
+            assert messenger.client.connector.cs is None and not messenger.deeds
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_http_messenger_requires_finite_positive_connection_deadline(timeout):
+    """Reject connection budgets that cannot bound initial establishment."""
+    with pytest.raises(ValueError, match="finite and positive"):
+        agenting.HTTPMessenger(hab=None, wit="wit", url="http://127.0.0.1:1",
+                               connectTimeout=timeout)
+
+
+@pytest.mark.parametrize("status", [204, 302, 503])
+def test_http_messenger_classifies_real_response(connectedHttpMessenger, status):
+    """Only a complete 2xx response clears pending work; redirects are not replayed."""
+    messenger, peer, doist, hab = connectedHttpMessenger
+    sendHttpRequests(messenger, peer, doist, hab)
+    peer.sendall(f"HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nLocation: /elsewhere\r\n\r\n".encode())
+    for _ in range(20):
+        doist.recur()  # Parse the real HTTP response and apply messenger policy.
+        if messenger.sent or messenger.done:
+            break
+        time.sleep(0.001)
+    if status == 204:
+        assert messenger.sent.popleft().status == status
+        assert messenger.idle and not messenger.failed
+        # A subsequent unanswered request is outside the initial connection budget.
+        sendHttpRequests(messenger, peer, doist, hab)
+        doist.tyme += messenger.connectTimeout + 1.0
+        doist.recur()
+        assert messenger.pending == 1 and messenger.client.waited and not messenger.failed
+    else:
+        assert not messenger.sent
+        assert messenger.failedResponse.status == status
+        assert messenger.done and messenger.failed and not messenger.sent
+        assert messenger.pending == 1 and not messenger.idle
+        assert messenger.client.connector.cs is None and not messenger.deeds
+        assert not messenger.client.redirects
+
+
+@pytest.mark.parametrize("response, success", [
+    (b"HTTP/1.1 200 OK\r\n\r\nclose framed body", True),
+    (b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nshort", False),
+    (b"HTTP/1.1 200 OK\r\nContent-Length:", False),
+    (b"", False),
+])
+def test_http_messenger_settles_response_before_eof(connectedHttpMessenger, response, success):
+    """EOF completes close framing but fails truncated or absent HTTP responses.
+    A later queued request stays pending even when the first response succeeded.
+    """
+    messenger, peer, doist, hab = connectedHttpMessenger
+    sendHttpRequests(messenger, peer, doist, hab, count=2)
+    peer.sendall(response)
+    peer.shutdown(socket.SHUT_WR)  # End the response while leaving the peer's read side open.
+    for _ in range(20):
+        doist.recur()
+        if messenger.done:
+            break
+        time.sleep(0.001)
+    assert messenger.done and messenger.failed
+    assert messenger.pending == (1 if success else 2) and not messenger.idle
+    if success:
+        rep = messenger.sent.popleft()
+        assert rep.status == 200 and rep.body == b"close framed body" and not rep.errored
+        assert messenger.failedResponse is None
+    else:
+        assert not messenger.sent and messenger.failedResponse.errored
+    assert messenger.client.connector.cs is None and not messenger.deeds
+
+
+def test_http_messenger_retains_send_failure(connectedHttpMessenger):
+    """A real broken pipe retains its HIO cause and outstanding request accounting."""
+    messenger, _, doist, hab = connectedHttpMessenger
+    connector = messenger.client.connector
+    # Close the OS send direction without setting HIO's flags. Its next socket
+    # send must discover the broken pipe, rather than reject admission artificially.
+    connector.cs.shutdown(socket.SHUT_WR)
+    messenger.msgs.append(bytearray(hab.makeOwnInception()))
+    doist.recur()  # msgDo queues the request; HTTP service admits it and attempts sending.
+    assert messenger.done and isinstance(messenger.error, BrokenPipeError)
+    assert messenger.error is connector.error and connector.txCutoff
+    assert messenger.pending == 1 and not messenger.idle and not messenger.sent
+    assert connector.cs is None and not messenger.deeds
+    first = messenger.error
+    messenger._fail(ConnectionError("later error"))
+    assert messenger.error is first
+
+
+def test_http_messenger_retains_reset_before_transmission(connectedHttpMessenger):
+    """An observed peer reset leaves a queued HTTP request untransmitted.
+    Real HIO receive service sets the error and flags before HTTP service runs.
+    """
+    messenger, peer, doist, hab = connectedHttpMessenger
+    connector = messenger.client.connector
+    messenger.msgs.append(bytearray(hab.makeOwnInception()))
+    # An abortive peer close generates RST. No exception or HIO flag is injected.
+    peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    peer.close()
+    assert select.select([connector.cs], [], [], 1.0)[0]  # Bounded OS wait, not scheduler time.
+    connector.serviceReceives()
+    cause = connector.error
+    assert isinstance(cause, ConnectionResetError) and connector.cutoff and connector.txCutoff
+
+    # msgDo encodes the CESR message into an HTTP request. HIO's cutoff branch
+    # then skips request transmission; responseDo retains the failure and cleans up.
+    doist.recur()
+    assert messenger.done and messenger.error is cause
+    assert messenger.pending == 1 and len(messenger.client.requests) == 1
+    assert not connector.txbs and not messenger.client.waited and not messenger.sent
+    assert not messenger.idle and connector.cs is None and not messenger.deeds
+
+
+def test_http_messenger_keeps_response_before_receive_reset(connectedHttpMessenger):
+    """A complete buffered HTTP response remains successful when HIO observes RST.
+    Control real socket-service ordering to expose the boundary deterministically;
+    no service method, error, or closure flag is patched.
+    """
+    messenger, peer, doist, hab = connectedHttpMessenger
+    sendHttpRequests(messenger, peer, doist, hab, count=2)
+    client = messenger.client
+    connector = client.connector
+    response = b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"
+    peer.sendall(response)
+
+    # Receive the response through HIO without parsing or advancing the messenger.
+    # This preserves waited=True, so the next request cannot be transmitted yet.
+    deadline = time.monotonic() + 1.0
+    while len(connector.rxbs) < len(response):
+        assert select.select([connector.cs], [], [], max(0.0, deadline - time.monotonic()))[0]
+        connector.serviceReceives()
+    assert connector.rxbs == response and client.waited and not client.responses
+    assert not messenger.sent
+
+    # Reset only after the full response is buffered, avoiding a packet-arrival race.
+    peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    peer.close()
+    assert select.select([connector.cs], [], [], 1.0)[0]
+    assert connector.error is None and not connector.cutoff and not connector.txCutoff
+
+    # HIO observes the real reset, then parses the already-buffered response.
+    # The messenger accounts for that success before retaining the transport failure.
+    doist.recur()
+    assert messenger.done and isinstance(messenger.error, ConnectionResetError)
+    assert messenger.error is connector.error and connector.cutoff and connector.txCutoff
+    assert messenger.sent.popleft().status == 204 and messenger.failedResponse is None
+    assert messenger.pending == 1 and len(client.requests) == 1 and not messenger.idle
+    assert connector.cs is None and not messenger.deeds
+
+
 def test_receiptor_tocks_are_generator_local():
     with habbing.openHby(name="receiptor-generator-tocks", temp=True) as hby:
         receiptor = agenting.Receiptor(hby=hby)
