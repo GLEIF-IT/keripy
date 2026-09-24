@@ -4,6 +4,10 @@ tests.app.agenting module
 
 """
 import time
+import socket
+import select
+import struct
+from contextlib import closing
 
 import falcon
 import pytest
@@ -19,6 +23,7 @@ from keri.help import nowIso8601
 from keri.app import habbing, indirecting, agenting, directing
 from keri.db import basing, dbing
 from keri.vdr import eventing, viring
+from tests.app.test_directing import openDoist
 
 
 def test_http_messengers_read_state_after_client_service():
@@ -138,6 +143,211 @@ def test_tcp_messenger_accounts_for_real_delivery(klas):
             assert messenger.idle
         finally:
             doist.exit()
+
+
+
+@pytest.fixture
+def connectedTcpMessenger():
+    """Connect a real messenger to a loopback server without sending application data."""
+    with (
+        habbing.openHab(name="tcp-outcome", temp=True) as (_, hab),
+        closing(serving.Server(host="127.0.0.1", port=0, tymeout=0.0)) as server,
+    ):
+        assert server.reopen()
+        server.eha = server.ha  # Advertise the port assigned by the OS.
+        messenger = agenting.TCPMessenger(
+            hab=hab, wit=hab.pre, url=f"tcp://127.0.0.1:{server.ha[1]}",
+        )
+        with openDoist(doers=[messenger], tock=0.03125, limit=1.0) as doist:
+            # The scheduler drives the client; the test accepts on the server side.
+            for _ in range(100):
+                doist.recur()
+                server.serviceConnects()
+                if messenger.client is not None and messenger.client.connected and server.ixes:
+                    break
+                time.sleep(0.001)  # Let the OS progress the real TCP handshake.
+            assert messenger.client.connected and len(server.ixes) == 1
+            yield messenger, next(iter(server.ixes.values())), doist
+
+
+def test_tcp_messenger_bounds_refused_connection():
+    """Stop refused connection attempts after four ticks of logical scheduler time.
+    HIO socket reopens do not reset the deadline; failure retains outstanding work
+    without producing a sent notification.
+    """
+    with (
+        habbing.openHab(name="tcp-refused", temp=True) as (_, hab),
+        socket.socket() as endpoint,
+    ):
+        # Port 0 asks the OS for a free port. Bind reserves it, but without listen()
+        # there is no listener to establish and queue connections for accept().
+        endpoint.bind(("127.0.0.1", 0))
+        tock = 0.03125  # Each recur() advances logical time by 1/32 second.
+        first, second = b"first", b"second"
+        messenger = agenting.TCPMessenger(
+            hab=hab, wit=hab.pre, url=f"tcp://127.0.0.1:{endpoint.getsockname()[1]}",
+            msgs=agenting.decking.Deck([first, second]), connectTimeout=4 * tock,
+        )
+        with openDoist(doers=[messenger], tock=tock, limit=1.0) as doist:
+            # Capture the shared logical clock before recur() runs the messenger
+            # and advances time. This is not a wall-clock timestamp.
+            started = doist.tyme
+            connectionDeadline = started + messenger.connectTimeout
+            # Eight ticks is only a test-loop guard against a broken implementation.
+            guardDeadline = started + 2 * messenger.connectTimeout
+            doist.recur()  # Start the connection deadline and admit the first message.
+            while not messenger.done and doist.tyme <= guardDeadline:
+                doist.recur()  # Each retry consumes the same absolute time budget.
+            # Prove termination by timeout, not merely that the loop guard expired.
+            assert messenger.done and messenger.failed
+            assert isinstance(messenger.error, TimeoutError)
+            # The messenger times out at tick 4 (0.125); recur() then advances the
+            # clock to tick 5 (0.15625) before returning to this assertion.
+            assert doist.tyme <= connectionDeadline + doist.tock
+            assert messenger.unsent == len(first) + len(second)
+            assert messenger.messageInProgress and list(messenger.msgs) == [second]
+            assert not messenger.idle and not messenger.sent
+            assert messenger.client.cs is None and not messenger.deeds
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_tcp_messenger_requires_finite_positive_connection_deadline(timeout):
+    """Reject values that would disable or make the initial connection bound invalid."""
+    with pytest.raises(ValueError, match="finite and positive"):
+        agenting.TCPMessenger(hab=None, wit="wit", url="tcp://127.0.0.1:1",
+                             connectTimeout=timeout)
+
+
+def test_tcp_messenger_receive_eof_still_sends(connectedTcpMessenger):
+    """A peer closing only its send direction can still receive our queued message.
+    Verify the bytes at the peer, not just the messenger's local completion cue.
+    """
+    messenger, remoter, doist = connectedTcpMessenger
+    remoter.cs.shutdown(socket.SHUT_WR)  # Server stops sending but keeps reading.
+    for _ in range(20):
+        doist.recur()  # Client observes receive EOF without closing its send direction.
+        if messenger.client.cutoff:
+            break
+    assert messenger.client.cutoff and not messenger.client.txCutoff
+
+    # The initial-connect deadline no longer applies to this established connection.
+    doist.tyme += messenger.connectTimeout + 1.0
+    msg = b"output after receive EOF"
+    messenger.msgs.append(msg)
+    for _ in range(20):
+        doist.recur()  # Client admits and flushes output despite receive EOF.
+        remoter.serviceReceives()  # Server reads the actual bytes from the socket.
+        if messenger.sent and remoter.rxbs == msg:
+            break
+    assert remoter.rxbs == msg
+    assert list(messenger.sent) == [msg]
+    assert messenger.idle and not messenger.failed
+
+
+def test_tcp_messenger_retains_transmit_failure(connectedTcpMessenger):
+    """A send failure preserves its cause and all unsent bytes, then closes the child.
+    Shut down the socket's send direction so HIO observes a real broken pipe.
+    """
+    messenger, _, doist = connectedTcpMessenger
+    first, second = b"not sent", b"still queued"
+    messenger.msgs.extend([first, second])
+    # receiptDo services sends before admitting new messages. This turn therefore
+    # buffers first via client.tx(), then yields without attempting its socket send.
+    doist.recur()
+    assert messenger.messageInProgress and messenger.client.txbs == first
+
+    # Shut down between admission and transmission, without setting HIO's flags.
+    messenger.client.cs.shutdown(socket.SHUT_WR)
+    # receiptDo resumes, loops back to serviceSends(), and discovers the broken pipe.
+    doist.recur()
+    assert messenger.done and messenger.failed
+    cause = messenger.error
+    assert isinstance(cause, BrokenPipeError)
+    assert messenger.unsent == len(first) + len(second)
+    assert messenger.client.txbs == first and list(messenger.msgs) == [second]
+    assert not messenger.sent and not messenger.idle
+    assert messenger.client.cs is None and not messenger.deeds
+    messenger._fail(ConnectionError("later cleanup"))
+    assert messenger.error is cause  # A later report cannot overwrite the first cause.
+
+
+
+def test_tcp_messenger_keeps_sent_before_receive_failure(connectedTcpMessenger):
+    """Account for a drained send before HIO reports a real peer reset on receive.
+    Control the socket-service order to make this boundary deterministic; no HIO
+    errors or flags are injected. The second message must remain outstanding.
+    """
+    messenger, remoter, doist = connectedTcpMessenger
+    first, second = b"sent before failure", b"not admitted"
+    messenger.msgs.extend([first, second])
+    doist.recur()  # Admit first into txbs; receiptDo has not attempted its send yet.
+    client = messenger.client
+    assert messenger.messageInProgress and client.txbs == first
+
+    # Drain through real HIO socket service without advancing the messenger.
+    # This holds it at the boundary between sending bytes and recording completion.
+    client.serviceSends()
+    assert not client.txbs and not messenger.sent
+    # Wait up to one wall-clock second for readiness; normally returns immediately.
+    # This bounds the test wait without advancing the scheduler's logical clock.
+    assert select.select(
+        [remoter.cs],  # Sockets to watch for read readiness.
+        [],           # No sockets watched for write readiness.
+        [],           # No sockets watched for exceptional conditions.
+        1.0,          # Maximum wall-clock wait in seconds.
+    )[0]  # Assert that the returned list of readable sockets is nonempty.
+    remoter.serviceReceives()
+    assert remoter.rxbs == first  # Prove delivery before provoking the receive failure.
+
+    # Abort the peer socket: zero-time SO_LINGER makes close send RST, not FIN.
+    # Bypass Remoter.close(), whose graceful shutdown would change that scenario.
+    remoter.cs.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    remoter.cs.close()
+    remoter.cs = None  # The fixture still owns the Remoter, but its socket is closed.
+    assert select.select([client.cs], [], [], 1.0)[0]  # Wait for OS readiness, not scheduler time.
+    assert client.error is None and not client.cutoff and not client.txCutoff
+
+    # serviceSends sees no buffered bytes. receiptDo records first as sent, then
+    # real HIO receive observes ECONNRESET and sets error/cutoff/txCutoff itself.
+    doist.recur()
+    assert list(messenger.sent) == [first]
+    assert messenger.done and isinstance(messenger.error, ConnectionResetError)
+    assert messenger.error is client.error and client.cutoff and client.txCutoff
+    assert messenger.unsent == len(second) and list(messenger.msgs) == [second]
+    assert not messenger.messageInProgress and not messenger.idle
+    assert client.cs is None and not messenger.deeds
+
+
+def test_tcp_messenger_retains_failure_before_admission(connectedTcpMessenger):
+    """A peer reset observed before admission leaves all queued messages unsent.
+    Let real HIO receive service set the error and closure flags; the messenger
+    must retain that cause and clean up without popping either message.
+    """
+    messenger, remoter, doist = connectedTcpMessenger
+    client = messenger.client
+    first, second = b"not admitted", b"still queued"
+    messenger.msgs.extend([first, second])
+
+    # Abort the connected peer before the messenger gets a turn to admit output.
+    # SO_LINGER with zero timeout produces RST; graceful shutdown would send FIN.
+    remoter.cs.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    remoter.cs.close()
+    remoter.cs = None  # Prevent fixture cleanup from closing this socket again.
+    # Wait for the OS to expose the reset without servicing HIO or advancing time.
+    assert select.select([client.cs], [], [], 1.0)[0]
+    assert client.error is None and not client.cutoff and not client.txCutoff
+    assert not client.txbs and not messenger.messageInProgress
+
+    # receiptDo services receives before admission. HIO observes ECONNRESET, and
+    # the messenger's closure check exits before msgs.popleft() or client.tx().
+    doist.recur()
+    assert messenger.done and isinstance(messenger.error, ConnectionResetError)
+    assert messenger.error is client.error and client.cutoff and client.txCutoff
+    assert list(messenger.msgs) == [first, second]
+    assert messenger.unsent == len(first) + len(second)
+    assert not client.txbs and not messenger.sent
+    assert not messenger.messageInProgress and not messenger.idle
+    assert client.cs is None and not messenger.deeds
 
 
 def test_http_messenger_accounts_for_real_delivery():

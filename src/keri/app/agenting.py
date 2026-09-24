@@ -5,9 +5,11 @@ keri.app.agenting module
 
 """
 import json
+import math
 import random
 from urllib.parse import urlencode, urlparse, urljoin
 
+from hio import hioing
 from hio.base import doing
 from hio.core import http
 from hio.core.tcp import clienting
@@ -721,13 +723,40 @@ class WitnessPublisher(doing.DoDoer):
 
 
 class TCPMessenger(doing.DoDoer):
-    """Send outbound CESR messages to a witness via TCP and parse inbound receipts.
+    """Supervise outbound TCP messages and inbound receipt parsing.
 
-    ``sent`` is a consumable notification queue, so lifecycle accounting is
-    kept separately in ``msgs`` and ``messageInProgress``.
+    Own the HIO client and parser child, coordinating transport progress with
+    message completion and terminal failure. This messenger performs the client
+    scheduling and resource-lifecycle role otherwise supplied by ClientDoer.
+    HIO retains responsibility for socket operations and transport state.
+
+    A sent notification means the message drained from the local transmit
+    buffer, not that a witness receipt was verified. Terminal failure retains
+    its cause and unsent-byte count without clearing outstanding work into
+    apparent success.
+
+    ``sent`` is a consumable notification queue; lifecycle accounting remains
+    in ``msgs`` and ``messageInProgress``. Owners must consume failure explicitly
+    rather than infer success from scheduler completion. No failed message is
+    replayed.
+
+    Attributes:
+        connectTimeout (float): finite positive initial connection budget in
+            scheduler seconds, default 30.0; not reset when HIO reopens a socket.
+            Stops applying once the first connection is established.
+        client (clienting.Client | None): owned TCP transport, created when
+            receiptDo starts. Retained for inspection after its socket closes.
+            Its cutoff and txCutoff describe receive and send closure separately.
+        error (Exception | None): first terminal transport error, initially None;
+            retained after cleanup, including an initial-connection TimeoutError.
+        unsent (int): byte-count snapshot at failure, initially zero. Includes
+            buffered output and queued messages; excludes
+            bytes already locally sent. Not a remote-delivery measurement.
+        failed (bool): read-only property indicating whether error is retained.
     """
 
-    def __init__(self, hab, wit, url, msgs=None, sent=None, doers=None, **kwa):
+    def __init__(self, hab, wit, url, msgs=None, sent=None, doers=None,
+                 connectTimeout=30.0, **kwa):
         """Initialize TCP messenger with queues and parser wiring.
 
         Parameters:
@@ -736,7 +765,15 @@ class TCPMessenger(doing.DoDoer):
             url (str): tcp endpoint URL for the witness.
             msgs (Deck | None): outbound message queue.
             sent (Deck | None): sent message queue.
+            connectTimeout (float): finite positive initial connection deadline
+                in scheduler seconds; not a response or established-send timeout.
         """
+        self.connectTimeout = float(connectTimeout)
+        if not math.isfinite(self.connectTimeout) or self.connectTimeout <= 0.0:
+            raise ValueError("connectTimeout must be finite and positive")
+        self.client = None
+        self.error = None
+        self.unsent = 0
         self.hab = hab
         self.wit = wit
         self.url = url
@@ -753,7 +790,15 @@ class TCPMessenger(doing.DoDoer):
         super(TCPMessenger, self).__init__(doers=doers)
 
     def receiptDo(self, tymth=None, tock=0.0, **kwa):
-        """Doer loop that sends queued messages over TCP."""
+        """Service the client and coordinate outbound message outcomes.
+
+        Call HIO's connection, send, and receive services explicitly so the messenger
+        can enforce its initial connection deadline, retain transport failures, and
+        record a completed send before a later receive failure in the same turn.
+        Receive-only EOF does not prevent further sending.
+
+        Own socket opening and closing and the parser child's scheduled lifetime.
+        """
         self.wind(tymth)
         _ = (yield tock)
 
@@ -761,29 +806,71 @@ class TCPMessenger(doing.DoDoer):
         if up.scheme != kering.Schemes.tcp:
             raise ValueError(f"invalid scheme {up.scheme} for TcpWitnesser")
 
-        client = clienting.Client(host=up.hostname, port=up.port)
+        self.client = client = clienting.Client(host=up.hostname, port=up.port,
+                                                tymth=self.tymth)
         self.parser = parsing.Parser(ims=client.rxbs,
                                      framed=True,
                                      kvy=self.kevery)
+        parserDoer = doing.doify(self.msgDo)
+        connected = False
+        stop = self.tyme + self.connectTimeout
+        msg = None
+        try:
+            client.reopen()
+            self.extend([parserDoer])
+            while True:
+                # Own transport service so errors cannot escape a separate child
+                # before we retain the cause and the outstanding byte count.
+                if not connected:
+                    client.serviceConnect()
+                    connected = client.connected
+                    if not connected and self.tyme >= stop:
+                        raise TimeoutError("TCP messenger initial connection deadline expired")
+                elif not client.connected:
+                    raise ConnectionError("TCP messenger connection closed")
 
-        clientDoer = clienting.ClientDoer(client=client)
-        self.extend([clientDoer, doing.doify(self.msgDo)])
+                if client.txCutoff:
+                    raise client.error or hioing.TransmitClosedError(
+                        "TCP messenger send direction is closed")
 
-        while True:
-            while not self.msgs:
+                client.serviceSends()
+                if client.txCutoff:
+                    raise client.error or hioing.TransmitClosedError(
+                        "TCP messenger send direction is closed")
+
+                # A locally drained message remains sent even if a later receive
+                # reports failure. This does not establish receipt or durability.
+                if msg is not None and not client.txbs:
+                    self.sent.append(msg)
+                    self.messageInProgress = False
+                    msg = None
+
+                client.serviceReceives()
+                if client.txCutoff:
+                    raise client.error or hioing.TransmitClosedError(
+                        "TCP messenger send direction is closed")
+                # Receive-only EOF leaves transmission usable, including new output.
+                if msg is None and self.msgs:
+                    msg = self.msgs.popleft()
+                    self.messageInProgress = True
+                    client.tx(msg)
                 yield tock
+        except (OSError, hioing.TransmitClosedError) as ex:
+            self._fail(client.error or ex)
+        finally:
+            self.remove([parserDoer])
+            client.close()
 
-            msg = self.msgs.popleft()
-            self.messageInProgress = True
+    @property
+    def failed(self):
+        """Whether this messenger retained a terminal transport failure."""
+        return self.error is not None
 
-            client.tx(msg)  # send to connected remote
-
-            while client.txbs:
-                yield tock
-
-            self.sent.append(msg)
-            self.messageInProgress = False
-            yield tock
+    def _fail(self, error):
+        """Retain the first cause and bytes not locally sent, without clearing work."""
+        if not self.failed:
+            self.error = error
+            self.unsent = len(self.client.txbs) + sum(map(len, self.msgs))
 
     def msgDo(self, tymth=None, tock=0.0, **opts):
         """Doer loop that parses inbound TCP messages into the Kevery."""
