@@ -983,7 +983,9 @@ class HTTPMessenger(doing.DoDoer):
 
     ``sent`` is a consumable success queue. Outstanding requests remain tracked
     in ``pending`` after failure; owners must consume failure explicitly rather
-    than infer success from scheduler completion. No request is replayed.
+    than infer success from scheduler completion. Normal closure after all work
+    succeeds finishes without error; a finished messenger cannot accept more work.
+    No request is replayed.
 
     Attributes:
         connectTimeout (float): finite positive initial connection budget in
@@ -1062,11 +1064,13 @@ class HTTPMessenger(doing.DoDoer):
 
         Keep HIO's request/response service order and EOF framing. A completed
         response takes precedence over a later transport failure in the same turn.
+        Clean send closure permits a fully sent request to finish receiving;
+        normal transport closure fails only work left outstanding. All exits clean up.
         """
         self.wind(tymth)
         self.client.wind(tymth)
         connector = self.client.connector
-        connected = False
+        everConnected = False  # Used to enforce initial connect deadline
         stop = self.tyme + self.connectTimeout
         try:
             self.client.reopen()
@@ -1074,8 +1078,12 @@ class HTTPMessenger(doing.DoDoer):
             while True:
                 error = None
                 try:
-                    # HIO admits requests, sends, and parses responses in its HTTP service order.
-                    self.client.service()
+                    if connector.txCutoff:
+                        # Sending is closed: receive the active response without admitting requests.
+                        self.client.serviceResponse()
+                    else:
+                        # HIO connects, admits requests, sends, and parses responses in order.
+                        self.client.service()
                     # EOF may finish a close-delimited response or expose an
                     # incomplete one. Let HIO settle it before classifying closure.
                     if connector.cutoff and self.client.waited:
@@ -1095,28 +1103,37 @@ class HTTPMessenger(doing.DoDoer):
                     self.sent.append(rep)
                     self.pending -= 1
 
-                # HIO may record a send failure without raising; check both reporting paths.
-                if error is not None or connector.txCutoff:
-                    self._fail(error or connector.error or hioing.TransmitClosedError(
-                        "HTTP messenger send direction is closed"))
+                # A recorded transport error is distinct from a normal directional close.
+                cause = error or connector.error
+                if cause is not None:
+                    self._fail(cause)
                     return
-                if connector.cutoff:
-                    if self.client.waited:
-                        # Resume EOF parsing next turn; HIO skips admission while receive is closed.
+
+                connectionEnded = everConnected and not connector.connected
+                transportClosed = (
+                    connector.txCutoff or connector.cutoff or connectionEnded
+                )
+                if transportClosed:
+                    receiveOpen = connector.connected and not connector.cutoff
+                    if connector.txCutoff and receiveOpen and self.client.waited and not connector.txbs:
+                        # Finish receiving the fully sent request's response before judging queued work.
                         yield tock
                         continue
-                    self._fail(connector.error or ConnectionError(
-                        "HTTP messenger connection closed"))
-                    return
-                if not connected:
-                    connected = connector.connected
-                    if not connected and self.tyme >= stop:
+                    if not self.idle:
+                        # Closure is a failure only when it leaves work unable to complete.
+                        if connector.txCutoff:
+                            cause = hioing.TransmitClosedError(
+                                "HTTP messenger send direction closed with outstanding work")
+                        else:
+                            cause = ConnectionError(
+                                "HTTP messenger connection closed with outstanding work")
+                        self._fail(cause)
+                    return  # Completed work permits a clean finish; both outcomes run finally.
+                if not everConnected:
+                    everConnected = connector.connected
+                    if not everConnected and self.tyme >= stop:
                         self._fail(TimeoutError("HTTP messenger initial connection deadline expired"))
                         return
-                elif not connector.connected:
-                    self._fail(connector.error or ConnectionError(
-                        "HTTP messenger connection closed"))
-                    return
                 yield tock
         except OSError as ex:
             self._fail(connector.error or ex)
