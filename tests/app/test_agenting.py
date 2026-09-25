@@ -355,6 +355,9 @@ def test_http_messenger_accounts_for_real_delivery():
 def connectedHttpMessenger(request, witnessTlsFiles):
     """Connect to a real peer, optionally using TLS 1.2 to exercise reciprocal closure.
 
+    The peer socket stands in for a witness's HTTP server. Tests supply response
+    bytes and closure timing directly, without running witness application logic.
+
     Args:
         request: pytest's built-in fixture context, not an HTTP request. Indirect
             parametrization supplies request.param=True for TLS; omission or
@@ -377,14 +380,21 @@ def connectedHttpMessenger(request, witnessTlsFiles):
             hab=hab, wit=hab.pre, url=f"{scheme}://127.0.0.1:{server.getsockname()[1]}")
         if useTls:
             messenger.client.connector.context.load_verify_locations(witnessTlsFiles["cafilepath"])
+        # Scheduler entry primes the children, opens the client socket, and starts its deadline.
         with openDoist(doers=[messenger], tock=0.03125, limit=1.0) as doist:
             peer = None
             try:
-                for _ in range(100):
-                    doist.recur()  # The messenger drives its client; the fixture accepts the peer.
+                setupDeadline = time.monotonic() + 1.0  # Wall-clock fixture guard, not connectTimeout.
+                # iterate until both sides of the TCP connection are established, including TLS socket wrapping
+                while peer is None or not messenger.client.connector.connected:
+                    if time.monotonic() >= setupDeadline:
+                        pytest.fail("HTTP fixture connection setup timed out")
+                    # First turn starts TCP connect; later turns advance client TCP/TLS setup.
+                    # No messages are queued yet, so msgDo does not create HTTP requests.
+                    doist.recur()
                     if peer is None:
                         try:
-                            peer, _ = server.accept()
+                            peer, _ = server.accept()  # Obtain the server side of the client's attempt.
                             peer.setblocking(False)
                             if useTls:
                                 peer = context.wrap_socket(peer, server_side=True,
@@ -393,13 +403,10 @@ def connectedHttpMessenger(request, witnessTlsFiles):
                             pass
                     if useTls and peer is not None:
                         try:
-                            peer.do_handshake()  # The fixture drives the server half of TLS setup.
+                            peer.do_handshake()  # Advance server TLS; recur() advances client TLS.
                         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
                             pass
-                    if peer is not None and messenger.client.connector.connected:
-                        break
                     time.sleep(0.001)  # Let the OS progress the loopback handshake.
-                assert peer is not None and messenger.client.connector.connected
                 yield messenger, peer, doist, hab
             finally:
                 if peer is not None:
@@ -412,10 +419,12 @@ def sendHttpRequests(messenger, peer, doist, hab, count=1):
     """
     for _ in range(count):
         messenger.msgs.append(bytearray(hab.makeOwnInception()))
-    for _ in range(20):
+    sendDeadline = time.monotonic() + 1.0
+    while messenger.pending != count or messenger.client.connector.txbs:
+        if time.monotonic() >= sendDeadline:
+            pytest.fail("HTTP request admission and transmission timed out")
         doist.recur()  # msgDo queues HTTP requests; responseDo services the client.
-        if messenger.pending == count and not messenger.client.connector.txbs:
-            break
+        time.sleep(0.001)  # Allow OS progress within the wall-clock test guard.
     assert messenger.pending == count and messenger.client.waited
     assert not messenger.client.connector.txbs
     assert len(messenger.client.requests) == count - 1
@@ -479,12 +488,12 @@ def test_http_messenger_bounds_tls_handshake():
             started = doist.tyme  # Shared logical clock, not elapsed wall-clock time.
             connectionDeadline = started + messenger.connectTimeout
             guardDeadline = started + 2 * messenger.connectTimeout  # Sixteen-tick test guard.
-            accepted = False
+            tcpConnected = False
             while not messenger.done and doist.tyme <= guardDeadline:
                 doist.recur()  # TCP connects, but this raw listener never speaks TLS.
-                accepted |= messenger.client.connector.accepted
+                tcpConnected = tcpConnected or messenger.client.connector.accepted
                 time.sleep(0.001)  # Let the OS progress TCP; this is not the TLS deadline.
-            assert accepted and messenger.done
+            assert tcpConnected and messenger.done
             assert isinstance(messenger.error, TimeoutError)
             # The eighth-tick timeout is observed after recur() advances to tick 9.
             assert doist.tyme <= connectionDeadline + doist.tock
@@ -499,32 +508,51 @@ def test_http_messenger_requires_finite_positive_connection_deadline(timeout):
                                connectTimeout=timeout)
 
 
-@pytest.mark.parametrize("status", [204, 302, 503])
-def test_http_messenger_classifies_real_response(connectedHttpMessenger, status):
-    """Only a complete 2xx response clears pending work; redirects are not replayed."""
+def test_http_messenger_connection_deadline_ends_after_connect(connectedHttpMessenger):
+    """The initial connection budget does not time out an established request."""
+    messenger, peer, doist, hab = connectedHttpMessenger
+    sendHttpRequests(messenger, peer, doist, hab)  # Peer receives the request but never responds.
+    doist.tyme += messenger.connectTimeout + 1.0  # Advance logical time beyond the initial budget.
+    doist.recur()
+    assert messenger.pending == 1 and messenger.client.waited
+    assert not messenger.done and not messenger.failed and not messenger.sent
+
+
+def test_http_messenger_records_successful_response(connectedHttpMessenger):
+    """A complete 2xx response clears pending work and leaves the messenger active."""
     messenger, peer, doist, hab = connectedHttpMessenger
     sendHttpRequests(messenger, peer, doist, hab)
-    peer.sendall(f"HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nLocation: /elsewhere\r\n\r\n".encode())
-    for _ in range(20):
-        doist.recur()  # Parse the real HTTP response and apply messenger policy.
-        if messenger.sent or messenger.done:
-            break
+    # The stand-in server acknowledges the request and keeps the connection open.
+    peer.sendall(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+    responseDeadline = time.monotonic() + 1.0
+    while not messenger.sent:
+        if time.monotonic() >= responseDeadline:
+            pytest.fail("HTTP success was not recorded")
+        doist.recur()  # Receive and account for the successful response.
         time.sleep(0.001)
-    if status == 204:
-        assert messenger.sent.popleft().status == status
-        assert messenger.idle and not messenger.failed
-        # A subsequent unanswered request is outside the initial connection budget.
-        sendHttpRequests(messenger, peer, doist, hab)
-        doist.tyme += messenger.connectTimeout + 1.0
-        doist.recur()
-        assert messenger.pending == 1 and messenger.client.waited and not messenger.failed
-    else:
-        assert not messenger.sent
-        assert messenger.failedResponse.status == status
-        assert messenger.done and messenger.failed and not messenger.sent
-        assert messenger.pending == 1 and not messenger.idle
-        assert messenger.client.connector.cs is None and not messenger.deeds
-        assert not messenger.client.redirects
+    assert messenger.sent.popleft().status == 204
+    assert messenger.pending == 0 and messenger.idle
+    assert not messenger.done and not messenger.failed
+
+
+@pytest.mark.parametrize("status", [302, 503], ids=["redirect", "server-error"])
+def test_http_messenger_rejects_unsuccessful_response(connectedHttpMessenger, status):
+    """A non-2xx response ends the messenger with pending work retained and no replay."""
+    messenger, peer, doist, hab = connectedHttpMessenger
+    sendHttpRequests(messenger, peer, doist, hab)
+    # A Location header makes the redirect case exercise the no-replay policy.
+    peer.sendall(f"HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nLocation: /elsewhere\r\n\r\n".encode())
+    responseDeadline = time.monotonic() + 1.0
+    while not messenger.done:
+        if time.monotonic() >= responseDeadline:
+            pytest.fail("HTTP rejection did not finish the messenger")
+        doist.recur()  # Receive the rejected response and perform terminal cleanup.
+        time.sleep(0.001)
+    assert messenger.failedResponse.status == status
+    assert messenger.done and messenger.failed and not messenger.sent
+    assert messenger.pending == 1 and not messenger.idle
+    assert messenger.client.connector.cs is None and not messenger.deeds
+    assert not messenger.client.redirects
 
 
 @pytest.mark.parametrize("response", [
@@ -535,12 +563,14 @@ def test_http_messenger_fails_incomplete_response_at_eof(connectedHttpMessenger,
     """EOF fails an incomplete or absent response and leaves the request pending."""
     messenger, peer, doist, hab = connectedHttpMessenger
     sendHttpRequests(messenger, peer, doist, hab)
+    # Make the stand-in server end its output before a complete response arrives.
     peer.sendall(response)
     peer.shutdown(socket.SHUT_WR)  # End the response while leaving the peer's read side open.
-    for _ in range(20):
+    eofDeadline = time.monotonic() + 1.0
+    while not messenger.done:
+        if time.monotonic() >= eofDeadline:
+            pytest.fail("Incomplete HTTP response did not settle after EOF")
         doist.recur()
-        if messenger.done:
-            break
         time.sleep(0.001)
     assert messenger.done and messenger.failed
     assert messenger.pending == 1 and not messenger.idle
@@ -548,26 +578,12 @@ def test_http_messenger_fails_incomplete_response_at_eof(connectedHttpMessenger,
     assert messenger.client.connector.cs is None and not messenger.deeds
 
 
-# The indirect fixture column supplies request.param (False=HTTP, True=TLS).
-# The test receives the fixture's yielded tuple; count and closeFramed pass through directly.
-@pytest.mark.parametrize("connectedHttpMessenger, count, closeFramed", [
-    pytest.param(True, 1, False, id="tls12-complete"),
-    pytest.param(False, 1, True, id="http-eof-complete"),
-    pytest.param(False, 2, True, id="http-eof-queued-request"),
-    pytest.param(True, 2, True, id="tls12-eof-queued-request"),
-], indirect=["connectedHttpMessenger"])
-def test_http_messenger_classifies_normal_closure(connectedHttpMessenger, count, closeFramed):
-    """Normal closure succeeds after all responses, but fails a stranded request.
-    TLS 1.2 close_notify also closes HIO's send direction without a transport error.
-    """
-    messenger, peer, doist, hab = connectedHttpMessenger
-    sendHttpRequests(messenger, peer, doist, hab, count=count)
-    connector = messenger.client.connector
-    secured = isinstance(peer, ssl.SSLSocket)
-    response = (b"HTTP/1.1 200 OK\r\n\r\nclose framed body" if closeFramed else
-                b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+def sendHttpResponseAndClose(messenger, peer, doist, response):
+    """Send a fixture-server response and drive the messenger through server closure."""
     peer.sendall(response)
-    if secured:
+    # The fixture peer stands in for the witness's HTTP server. Close its output
+    # explicitly to test the messenger's response to real TLS close_notify or TCP EOF.
+    if isinstance(peer, ssl.SSLSocket):
         assert peer.version() == "TLSv1.2"
         try:
             peer.unwrap()  # Send close_notify; HIO will answer on its receive turn.
@@ -575,29 +591,60 @@ def test_http_messenger_classifies_normal_closure(connectedHttpMessenger, count,
             pass
     else:
         peer.shutdown(socket.SHUT_WR)  # TCP EOF ends receive only, unlike TLS 1.2.
-    # Buffer response and closure through HIO before HTTP processing. Otherwise a
-    # later-arriving FIN can allow the next request to be admitted between them.
+    # Let the messenger observe the server's closure through its normal service loop.
     deadline = time.monotonic() + 1.0
-    while not connector.cutoff:
-        connector.serviceReceives()
-        if not connector.cutoff:
-            assert select.select([connector.cs], [], [], max(0.0, deadline - time.monotonic()))[0]
-    # Check HIO's observed directions before messenger cleanup can close either one.
-    assert connector.txCutoff == secured and connector.error is None
-    assert not messenger.done and messenger.client.waited and not messenger.sent
+    while not messenger.done:
+        if time.monotonic() >= deadline:
+            pytest.fail("HTTP messenger did not finish after server closure")
+        doist.recur()
+        time.sleep(0.001)
 
-    doist.recur()  # Parse, account for the response, and finish in this same turn.
-    assert messenger.done and connector.error is None
+
+# Indirect parametrization supplies request.param to the fixture (False=HTTP, True=TLS).
+# The test receives its yielded tuple; closeFramed passes directly to the test.
+@pytest.mark.parametrize("connectedHttpMessenger, closeFramed", [
+    pytest.param(True, False, id="tls12-complete"),
+    pytest.param(False, True, id="http-eof-complete"),
+], indirect=["connectedHttpMessenger"])
+def test_http_messenger_finishes_cleanly_after_successful_response(connectedHttpMessenger, closeFramed):
+    """Server closure after the only successful response finishes without failure."""
+    messenger, peer, doist, hab = connectedHttpMessenger
+    sendHttpRequests(messenger, peer, doist, hab, count=1)
+    response = (b"HTTP/1.1 200 OK\r\n\r\nclose framed body" if closeFramed else
+                b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+    sendHttpResponseAndClose(messenger, peer, doist, response)
+
     rep = messenger.sent.popleft()
     assert rep.status == (200 if closeFramed else 204) and not rep.errored
     assert rep.body == (b"close framed body" if closeFramed else b"")
     assert not messenger.sent and messenger.failedResponse is None
-    assert messenger.pending == count - 1 and len(messenger.client.requests) == count - 1
-    if count == 1:
-        assert messenger.idle and not messenger.failed and messenger.error is None
-    else:
-        assert not messenger.idle and messenger.failed
-    assert connector.cs is None and not messenger.deeds
+    assert messenger.pending == 0 and not messenger.client.requests
+    assert messenger.idle and not messenger.failed and messenger.error is None
+    assert messenger.done and messenger.client.connector.error is None
+    assert messenger.client.connector.cs is None and not messenger.deeds
+
+
+# Each value selects the fixture's transport; both cases strand the second request.
+@pytest.mark.parametrize("connectedHttpMessenger", [
+    pytest.param(False, id="http-eof-queued-request"),
+    pytest.param(True, id="tls12-eof-queued-request"),
+], indirect=True)
+def test_http_messenger_retains_queued_request_after_server_closure(connectedHttpMessenger):
+    """The first response succeeds, but server closure fails the second queued request."""
+    messenger, peer, doist, hab = connectedHttpMessenger
+    sendHttpRequests(messenger, peer, doist, hab, count=2)
+    # EOF framing keeps the first response open until closure, holding the second request.
+    response = b"HTTP/1.1 200 OK\r\n\r\nclose framed body"
+    sendHttpResponseAndClose(messenger, peer, doist, response)
+
+    rep = messenger.sent.popleft()
+    assert rep.status == 200 and not rep.errored and rep.body == b"close framed body"
+    assert not messenger.sent and messenger.failedResponse is None
+    # A successful first response does not clear the request stranded in HIO's queue.
+    assert messenger.pending == 1 and len(messenger.client.requests) == 1
+    assert not messenger.idle and messenger.failed
+    assert messenger.done and messenger.client.connector.error is None
+    assert messenger.client.connector.cs is None and not messenger.deeds
 
 
 def test_http_messenger_finishes_response_after_send_close(connectedHttpMessenger):
@@ -610,12 +657,14 @@ def test_http_messenger_finishes_response_after_send_close(connectedHttpMessenge
     connector = messenger.client.connector
     connector.shutdownSend()  # Real TCP half-close; HIO records txCutoff without an error.
     assert connector.txCutoff and not connector.cutoff and connector.error is None
+    # Split the stand-in server's response so the test can observe the incomplete body.
     peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nab")
-    for _ in range(20):
+    partialDeadline = time.monotonic() + 1.0
+    while connector.rxbs != b"ab":
+        if time.monotonic() >= partialDeadline:
+            pytest.fail("Partial HTTP response did not arrive after send closure")
         doist.recur()  # A partial response must not trigger failure or another admission.
         assert not messenger.done and not messenger.failed and messenger.client.waited
-        if connector.rxbs == b"ab":
-            break
         time.sleep(0.001)
     # HIO buffers a fixed-length body until all Content-Length bytes arrive.
     assert messenger.client.respondent.status == 200 and connector.rxbs == b"ab"
@@ -623,10 +672,11 @@ def test_http_messenger_finishes_response_after_send_close(connectedHttpMessenge
     assert connector.cs is not None and not connector.txbs
 
     peer.sendall(b"cd")
-    for _ in range(20):
+    responseDeadline = time.monotonic() + 1.0
+    while not messenger.done:
+        if time.monotonic() >= responseDeadline:
+            pytest.fail("HTTP response did not finish after send closure")
         doist.recur()  # Response-only service finishes the first request despite txCutoff.
-        if messenger.done:
-            break
         time.sleep(0.001)
     assert messenger.done and connector.error is None
     rep = messenger.sent.popleft()
@@ -654,7 +704,10 @@ def test_http_messenger_retains_send_failure(connectedHttpMessenger):
     assert messenger.error is first
 
 
-@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("count", [
+    pytest.param(1, id="all-responses-complete"),
+    pytest.param(2, id="queued-request-remains"),
+])
 def test_http_messenger_keeps_response_before_receive_reset(connectedHttpMessenger, count):
     """A complete buffered HTTP response remains successful when HIO observes RST.
     Control real socket-service ordering to expose the boundary deterministically;
@@ -676,7 +729,8 @@ def test_http_messenger_keeps_response_before_receive_reset(connectedHttpMesseng
     assert connector.rxbs == response and client.waited and not client.responses
     assert not messenger.sent
 
-    # Reset only after the full response is buffered, avoiding a packet-arrival race.
+    # Make the stand-in server abort after responding. Wait until the response is
+    # buffered before causing the real reset, avoiding a packet-arrival race.
     peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
     peer.close()
     assert select.select([connector.cs], [], [], 1.0)[0]
@@ -689,6 +743,7 @@ def test_http_messenger_keeps_response_before_receive_reset(connectedHttpMesseng
     assert messenger.error is connector.error and connector.cutoff and connector.txCutoff
     assert messenger.sent.popleft().status == 204 and messenger.failedResponse is None
     assert messenger.pending == count - 1 and len(client.requests) == count - 1
+    # With no requests left, idle is true even though the later reset remains a failure.
     assert messenger.idle == (count == 1)
     assert connector.cs is None and not messenger.deeds
 
