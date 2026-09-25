@@ -100,7 +100,9 @@ def test_tcp_messenger_accounts_for_real_delivery(klas):
 
 @pytest.fixture
 def connectedTcpMessenger():
-    """Connect a real messenger to a loopback server without sending application data."""
+    """Connect a real messenger to a loopback server without sending application data.
+    The HIO server stands in for a witness transport; tests control its peer socket.
+    """
     with (
         habbing.openHab(name="tcp-outcome", temp=True) as (_, hab),
         closing(serving.Server(host="127.0.0.1", port=0, tymeout=0.0)) as server,
@@ -111,12 +113,12 @@ def connectedTcpMessenger():
             hab=hab, wit=hab.pre, url=f"tcp://127.0.0.1:{server.ha[1]}",
         )
         with openDoist(doers=[messenger], tock=0.03125, limit=1.0) as doist:
-            # The scheduler drives the client; the test accepts on the server side.
-            for _ in range(100):
-                doist.recur()
-                server.serviceConnects()
-                if messenger.client is not None and messenger.client.connected and server.ixes:
-                    break
+            setupDeadline = time.monotonic() + 1.0  # Wall-clock fixture guard, not connectTimeout.
+            while (messenger.client is None or not messenger.client.connected or not server.ixes):
+                if time.monotonic() >= setupDeadline:
+                    pytest.fail("TCP fixture connection setup timed out")
+                doist.recur()  # The scheduler drives the client's connection attempt.
+                server.serviceConnects()  # HIO accepts the server side.
                 time.sleep(0.001)  # Let the OS progress the real TCP handshake.
             assert messenger.client.connected and len(server.ixes) == 1
             yield messenger, next(iter(server.ixes.values())), doist
@@ -176,21 +178,25 @@ def test_tcp_messenger_receive_eof_still_sends(connectedTcpMessenger):
     """
     messenger, remoter, doist = connectedTcpMessenger
     remoter.cs.shutdown(socket.SHUT_WR)  # Server stops sending but keeps reading.
-    for _ in range(20):
+    eofDeadline = time.monotonic() + 1.0
+    while not messenger.client.cutoff:
+        if time.monotonic() >= eofDeadline:
+            pytest.fail("TCP client did not observe peer EOF")
         doist.recur()  # Client observes receive EOF without closing its send direction.
-        if messenger.client.cutoff:
-            break
+        time.sleep(0.001)
     assert messenger.client.cutoff and not messenger.client.txCutoff
 
     # The initial-connect deadline no longer applies to this established connection.
     doist.tyme += messenger.connectTimeout + 1.0
     msg = b"output after receive EOF"
     messenger.msgs.append(msg)
-    for _ in range(20):
+    deliveryDeadline = time.monotonic() + 1.0
+    while not messenger.sent or remoter.rxbs != msg:
+        if time.monotonic() >= deliveryDeadline:
+            pytest.fail("TCP message was not delivered after receive EOF")
         doist.recur()  # Client admits and flushes output despite receive EOF.
         remoter.serviceReceives()  # Server reads the actual bytes from the socket.
-        if messenger.sent and remoter.rxbs == msg:
-            break
+        time.sleep(0.001)
     assert remoter.rxbs == msg
     assert list(messenger.sent) == [msg]
     assert messenger.idle and not messenger.failed
