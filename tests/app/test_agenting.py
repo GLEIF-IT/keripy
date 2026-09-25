@@ -24,8 +24,7 @@ from keri.help import nowIso8601
 from keri.app import habbing, indirecting, agenting, directing
 from keri.db import basing, dbing
 from keri.vdr import eventing, viring
-from tests.app.test_directing import openDoist
-from tests.app.test_indirecting import witnessTlsFiles
+from tests.support.scheduling import openDoist
 
 
 def test_stream_messenger_from_admits_tcp_payload():
@@ -360,13 +359,13 @@ def connectedHttpMessenger(request, witnessTlsFiles):
         request: pytest's built-in fixture context, not an HTTP request. Indirect
             parametrization supplies request.param=True for TLS; omission or
             False selects plain HTTP.
-        witnessTlsFiles: TLS fixture imported from test_indirecting.
+        witnessTlsFiles: shared fixture discovered through tests/app/conftest.py.
             Supplies temporary key/certificate paths for the TLS server and a CA
             path for the client to trust that certificate; unused for plain HTTP.
     """
-    secured = getattr(request, "param", False)
-    scheme = "https" if secured else "http"
-    if secured:
+    useTls = getattr(request, "param", False)
+    scheme = "https" if useTls else "http"
+    if useTls:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.maximum_version = context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(witnessTlsFiles["certpath"], witnessTlsFiles["keypath"])
@@ -376,7 +375,7 @@ def connectedHttpMessenger(request, witnessTlsFiles):
         server.setblocking(False)
         messenger = agenting.HTTPMessenger(
             hab=hab, wit=hab.pre, url=f"{scheme}://127.0.0.1:{server.getsockname()[1]}")
-        if secured:
+        if useTls:
             messenger.client.connector.context.load_verify_locations(witnessTlsFiles["cafilepath"])
         with openDoist(doers=[messenger], tock=0.03125, limit=1.0) as doist:
             peer = None
@@ -387,12 +386,12 @@ def connectedHttpMessenger(request, witnessTlsFiles):
                         try:
                             peer, _ = server.accept()
                             peer.setblocking(False)
-                            if secured:
+                            if useTls:
                                 peer = context.wrap_socket(peer, server_side=True,
                                                            do_handshake_on_connect=False)
                         except BlockingIOError:
                             pass
-                    if secured and peer is not None:
+                    if useTls and peer is not None:
                         try:
                             peer.do_handshake()  # The fixture drives the server half of TLS setup.
                         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
@@ -549,6 +548,8 @@ def test_http_messenger_fails_incomplete_response_at_eof(connectedHttpMessenger,
     assert messenger.client.connector.cs is None and not messenger.deeds
 
 
+# The indirect fixture column supplies request.param (False=HTTP, True=TLS).
+# The test receives the fixture's yielded tuple; count and closeFramed pass through directly.
 @pytest.mark.parametrize("connectedHttpMessenger, count, closeFramed", [
     pytest.param(True, 1, False, id="tls12-complete"),
     pytest.param(False, 1, True, id="http-eof-complete"),
