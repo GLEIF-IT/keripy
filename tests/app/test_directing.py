@@ -4,7 +4,7 @@ tests.db.dbing module
 
 """
 
-from contextlib import closing, contextmanager
+from contextlib import closing
 
 import logging
 import os
@@ -24,6 +24,8 @@ from keri.app import habbing, directing
 
 from keri.db import dbing
 from keri.demo import demoing
+from tests.support.scheduling import openDoist
+from tests.support.transport import makeRemoter, openTcpPair
 
 
 @pytest.fixture()
@@ -32,45 +34,6 @@ def directHabs():
     with habbing.openHab(name="alice-directing", temp=True) as (_, alice), \
             habbing.openHab(name="bob-directing", temp=True) as (_, bob):
         yield alice, bob
-
-
-def makeRemoter(ims=b"", *, cutoff=False, cs=None, tymeout=None):
-    """Create an accepted connection buffer for direct Reactant tests."""
-    remoter = serving.Remoter(ha=("127.0.0.1", 5632), ca=("127.0.0.1", 5633),
-                              cs=cs, tymeout=tymeout)
-    remoter.rxbs.extend(ims)
-    remoter.cutoff = cutoff
-    return remoter
-
-
-@contextmanager
-def openTcpPair(ims=b"", *, tymeout=None):
-    """Own a Server, a socket-backed Remoter, and its peer for one test.
-    Simulates the normal HIO management of TCP connections that are consumed and
-    supervised by KERIpy components like Director and Reactant.
-
-    The caller registers and winds the Remoter after scheduler entry, since
-    ServerDoer.enter() reopens the server and closes existing connections.
-    """
-    remoterSocket, peerSocket = socket.socketpair()
-    with remoterSocket, peerSocket:
-        remoter = makeRemoter(ims, cs=remoterSocket, tymeout=tymeout)
-        server = serving.Server(host="127.0.0.1", port=0, tymeout=tymeout)
-        try:
-            yield server, remoter, peerSocket
-        finally:
-            server.close()
-
-
-@contextmanager
-def openDoist(*, doers, tock, limit):
-    """Enter a manually driven Doist and guarantee scheduler cleanup."""
-    doist = doing.Doist(doers=doers, tock=tock, limit=limit)
-    try:
-        doist.enter()
-        yield doist
-    finally:
-        doist.exit()
 
 
 def drainSocket(sock):
