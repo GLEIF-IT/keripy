@@ -1157,9 +1157,27 @@ class HTTPMessenger(doing.DoDoer):
 
 
 class HTTPStreamMessenger(doing.DoDoer):
-    """Send a single CESR message via HTTP PUT and capture the response."""
+    """Supervise one CESR HTTP PUT and retain its response and terminal failure.
 
-    def __init__(self, hab, wit, url, msg=b'', headers=None, **kwa):
+    HIO owns socket mechanics, TLS and HTTP framing. This messenger performs
+    ClientDoer's scheduling and resource-lifecycle role so response accounting
+    precedes failure classification and every exit closes the client. Unlike
+    HTTPMessenger, it finishes after its single response rather than accepting
+    more requests. Completion alone does not establish successful delivery.
+
+    Attributes:
+        rep (Response | None): captured HTTP response, including a rejected or
+            incomplete response; None until one is produced. A complete 2xx
+            response remains available even if a later transport error is retained.
+        connectTimeout (float): finite positive initial connection budget in
+            scheduler seconds, default 30.0; includes TLS and ignores reopen attempts.
+            Ends once connected; no send or response deadline is imposed.
+        error (Exception | None): first terminal transport or HTTP response error;
+            initially None. HTTP success is not proof of remote durable storage.
+        failed (bool): read-only property indicating whether error is retained.
+    """
+
+    def __init__(self, hab, wit, url, msg=b'', headers=None, connectTimeout=30.0, **kwa):
         """Initialize a single-request HTTP messenger.
 
         Parameters:
@@ -1168,7 +1186,13 @@ class HTTPStreamMessenger(doing.DoDoer):
             url (str): http/https endpoint URL for the witness.
             msg (bytes): CESR message body to send.
             headers (dict | None): extra HTTP headers.
+            connectTimeout (float): initial TCP/TLS connection budget, not a
+                deadline for receiving the response.
         """
+        self.connectTimeout = float(connectTimeout)
+        if not math.isfinite(self.connectTimeout) or self.connectTimeout <= 0.0:
+            raise ValueError("connectTimeout must be finite and positive")
+        self.error = None
         self.hab = hab
         self.wit = wit
         self.rep = None
@@ -1176,10 +1200,11 @@ class HTTPStreamMessenger(doing.DoDoer):
 
         up = urlparse(url)
         if up.scheme != kering.Schemes.http and up.scheme != kering.Schemes.https:
-            raise ValueError(f"invalid scheme {up.scheme} for HTTPMessenger")
+            raise ValueError(f"invalid scheme {up.scheme} for HTTPStreamMessenger")
 
-        self.client = http.clienting.Client(scheme=up.scheme, hostname=up.hostname, port=up.port)
-        clientDoer = http.clienting.ClientDoer(client=self.client)
+        self.client = http.clienting.Client(scheme=up.scheme, hostname=up.hostname,
+                                           port=up.port, redirectable=False,
+                                           reconnectable=False)
 
         headers = Hict([
             ("Content-Type", "application/cesr"),
@@ -1194,20 +1219,87 @@ class HTTPStreamMessenger(doing.DoDoer):
             body=bytes(msg)
         )
 
-        doers = [clientDoer]
-
+        doers = [doing.doify(self.responseDo)]
         super(HTTPStreamMessenger, self).__init__(doers=doers, **kwa)
 
-    def recur(self, tyme, deeds=None):
-        """Service the client, then stop when its current response is ready."""
-        done = super(HTTPStreamMessenger, self).recur(tyme, deeds)
+    def responseDo(self, tymth=None, tock=0.0, **kwa):
+        """Service the PUT, retain its outcome, and close on completion or cancellation.
 
-        if self.client.responses:
-            self.rep = self.client.respond()
-            self.remove([self.client])
-            return True
+        Let HIO settle EOF framing before classifying the response. A fully sent
+        request may finish receiving after clean send closure; no request is replayed.
+        """
+        self.wind(tymth)
+        self.client.wind(tymth)
+        connector = self.client.connector
+        everConnected = False
+        stop = self.tyme + self.connectTimeout
+        try:
+            self.client.reopen()
+            _ = (yield tock)
+            while True:
+                error = None
+                try:
+                    if connector.txCutoff:
+                        # Receive the active response without admitting another send.
+                        self.client.serviceResponse()
+                    else:
+                        self.client.service()  # Connect, admit the PUT, send, then receive/parse.
+                    if connector.cutoff and self.client.waited:
+                        # EOF completes close-delimited bodies or exposes incomplete responses.
+                        self.client.respondent.close()
+                        self.client.serviceResponse()
+                except OSError as ex:
+                    error = connector.error or ex
 
-        return done
+                # Capture the response before inspecting a later transport error in this turn.
+                if self.client.responses:
+                    self.rep = self.client.respond()
+                    if self.rep.errored or self.rep.error or not 200 <= self.rep.status < 300:
+                        self._fail(error or connector.error or http.httping.HTTPException(
+                            self.rep.error or f"HTTP response status {self.rep.status} {self.rep.reason}"))
+                        return
+
+                cause = error or connector.error
+                if cause is not None:
+                    self._fail(cause)
+                    return
+
+                if self.rep is not None:
+                    return  # A one-shot messenger finishes after its successful response.
+
+                connectionEnded = everConnected and not connector.connected
+                transportClosed = connector.txCutoff or connector.cutoff or connectionEnded
+                if transportClosed:
+                    receiveOpen = connector.connected and not connector.cutoff
+                    if connector.txCutoff and receiveOpen and self.client.waited and not connector.txbs:
+                        # The PUT was fully sent; its response may still complete.
+                        yield tock
+                        continue
+                    cause = (hioing.TransmitClosedError("HTTP stream messenger send direction closed")
+                             if connector.txCutoff else
+                             ConnectionError("HTTP stream messenger closed before its response completed"))
+                    self._fail(cause)
+                    return
+                if not everConnected:
+                    everConnected = connector.connected
+                    if not everConnected and self.tyme >= stop:
+                        self._fail(TimeoutError("HTTP stream messenger initial connection deadline expired"))
+                        return
+                yield tock
+        except OSError as ex:
+            self._fail(ex)
+        finally:
+            self.client.close()
+
+    @property
+    def failed(self):
+        """Whether this messenger retained a terminal failure."""
+        return self.error is not None
+
+    def _fail(self, error):
+        """Retain the first error independently of any captured response."""
+        if not self.failed:
+            self.error = error
 
 
 def mailbox(hab, cid):
