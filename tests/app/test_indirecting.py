@@ -624,4 +624,3 @@ if __name__ == "__main__":
     test_qrymailbox_iter()
     test_wit_query_ends()
     test_metrics_end()
-
