@@ -19,9 +19,11 @@ from hio.help import decking
 
 from keri import kering
 from keri import core
-from keri.app import indirecting, storing, habbing, agenting
+from keri.app import indirecting, storing, habbing, agenting, directing
 from keri.metric import EscrowEnd
 from keri.vdr import viring
+from keri.db import dbing
+from tests.support.scheduling import openDoist
 
 
 def test_witness_message_tock_continues_after_initial_entry():
@@ -551,6 +553,77 @@ def test_metrics_end():
             assert line.endswith(' 0'), f"Expected count 0, got: {line}"
 
         reger.close()
+
+
+@pytest.fixture
+def witnessTcpSession():
+    """Own a temporary witness, controller, and scheduler without queuing messages."""
+    with (
+        habbing.openHby(name="idle-witness", temp=True) as witnessHby,
+        habbing.openHby(name="idle-controller", temp=True) as controllerHby,
+        # Supply the witness mailbox explicitly so this context owns its cleanup.
+        dbing.openLMDB(cls=storing.Mailboxer, name="idle-witness", temp=True) as mailbox,
+    ):
+        # Give HIO concrete ephemeral ports: HTTP maps zero to 80, while raw TCP
+        # retains zero in its external address and rejects the accepted connection.
+        with socket.socket() as tcpProbe, socket.socket() as httpProbe:
+            tcpProbe.bind(("127.0.0.1", 0))
+            httpProbe.bind(("127.0.0.1", 0))
+            tcpPort = tcpProbe.getsockname()[1]
+            httpPort = httpProbe.getsockname()[1]
+        doers = indirecting.setupWitness(hby=witnessHby, alias="idle-witness",
+                                        mbx=mailbox, tcpPort=tcpPort, httpPort=httpPort)
+        directant = next(doer for doer in doers if isinstance(doer, directing.Directant))
+        server = directant.server
+        witness = witnessHby.habByName("idle-witness")
+        controller = controllerHby.makeHab(name="controller", wits=[witness.pre])
+        messenger = agenting.TCPMessenger(hab=controller, wit=witness.pre,
+                                          url=f"tcp://127.0.0.1:{server.ha[1]}")
+
+        with openDoist(doers=[*doers, messenger], tock=0.03125, limit=5.0) as doist:
+            yield controller, messenger, server, doist
+
+
+def waitForWitnessReceipt(controller, doist, event):
+    """Drive socket I/O and CESR parsing until the event's witness receipt is stored."""
+    dgkey = dbing.dgKey(event.preb, event.saidb)
+    deadline = doist.tyme + 3.0
+    while not controller.db.getWigs(dgkey):
+        assert doist.tyme < deadline, "witness receipt did not arrive"
+        doist.recur()
+        time.sleep(0.001)  # Let the OS advance loopback socket delivery.
+
+
+def test_witness_tcp_receipts_survive_idle_gap(witnessTcpSession):
+    """A witness returns receipts on the same TCP connection after an idle gap."""
+    controller, messenger, server, doist = witnessTcpSession
+
+    messenger.msgs.append(controller.makeOwnInception())
+    waitForWitnessReceipt(controller, doist, controller.kever.serder)
+    ca, remoter = next(iter(server.ixes.items()))
+
+    # Receipt collection may leave this connection idle before later traffic.
+    # Advance scheduler time beyond HIO's former one-second server default.
+    idleUntil = doist.tyme + 2.0
+    while doist.tyme < idleUntil:
+        doist.recur()
+        time.sleep(0.001)
+    assert server.ixes.get(ca) is remoter and not remoter.cutoff
+    assert server.tymeout == remoter.tymeout == 0.0
+
+    controller.interact()
+    messenger.msgs.append(controller.makeOwnEvent(sn=1))
+    waitForWitnessReceipt(controller, doist, controller.kever.serder)
+    assert server.ixes.get(ca) is remoter  # No reconnect hid an idle closure.
+    assert not messenger.failed
+
+    # Disabling idle expiry must still permit normal peer-EOF cleanup.
+    messenger.client.shutdownSend()
+    deadline = doist.tyme + 1.0
+    while ca in server.ixes:
+        assert doist.tyme < deadline, "witness did not close after peer EOF"
+        doist.recur()
+        time.sleep(0.001)
 
 
 if __name__ == "__main__":

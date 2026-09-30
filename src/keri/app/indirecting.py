@@ -46,7 +46,10 @@ def setupWitness(hby, alias="witness", mbx=None, aids=None, tcpPort=5631, httpPo
     Setup witness controller and doers.
 
     httpTimeout is the HTTP/HTTPS connection idle timeout in seconds; zero
-    disables idle expiry. It does not configure the separate raw TCP listener.
+    disables idle expiry. Raw TCP has no idle expiry so receipt collection can
+    pause before later fanout on the same connection. Idle sockets remain open
+    until peer closure, transport failure, or witness shutdown; connection renewal
+    is not implemented here.
 
     """
     host = "0.0.0.0"
@@ -58,7 +61,7 @@ def setupWitness(hby, alias="witness", mbx=None, aids=None, tcpPort=5631, httpPo
     if hab is None:
         hab = hby.makeHab(name=alias, transferable=False)
 
-    reger = viring.Reger(name=hab.name, db=hab.db, temp=False)
+    reger = viring.Reger(name=hab.name, db=hab.db, temp=hby.temp)
     verfer = verifying.Verifier(hby=hby, reger=reger)
 
     mbx = mbx if mbx is not None else storing.Mailboxer(name=alias, temp=hby.temp)
@@ -115,7 +118,8 @@ def setupWitness(hby, alias="witness", mbx=None, aids=None, tcpPort=5631, httpPo
     regDoer = basing.BaserDoer(baser=reger)
 
     if tcpPort is not None:
-        server = serving.Server(host="", port=tcpPort)
+        # Keep the connection available while the controller collects other receipts.
+        server = serving.Server(host="", port=tcpPort, tymeout=0.0)
         if not server.reopen():
             raise RuntimeError(f"cannot create tcp server on port {tcpPort}")
         serverDoer = serving.ServerDoer(server=server)
