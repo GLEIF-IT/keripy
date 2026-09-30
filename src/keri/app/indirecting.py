@@ -61,7 +61,7 @@ def setupWitness(hby, alias="witness", mbx=None, aids=None, tcpPort=5631, httpPo
     if hab is None:
         hab = hby.makeHab(name=alias, transferable=False)
 
-    reger = viring.Reger(name=hab.name, db=hab.db, temp=False)
+    reger = viring.Reger(name=hab.name, db=hab.db, temp=hby.temp)
     verfer = verifying.Verifier(hby=hby, reger=reger)
 
     mbx = mbx if mbx is not None else storing.Mailboxer(name=alias, temp=hby.temp)
