@@ -500,19 +500,24 @@ class WitnessReceiptor(doing.DoDoer):
 
 
 class WitnessInquisitor(doing.DoDoer):
+    """Dispatch queries to selected endpoints with bounded transport completion.
+
+    Each attempt includes any introduction and the query. Success in ``sent``
+    remains the query bytes for TCP or its HTTP response. Neither proves that
+    the requested KEL/TEL data has arrived; response processing happens elsewhere.
+    Failed attempts are logged and retained, then the next queued query can run.
+    No retry or alternate-endpoint selection follows failure.
+
+    Attributes:
+        queryTimeout (float): finite positive per-attempt budget in scheduler
+            seconds, default 30.0. Covers connection, introduction, and query
+            transmission/HTTP response, starting when the messenger is scheduled.
+        failures (Deck): consumable dicts containing the original ``query``
+            request, selected ``wit``, and typed ``error``. Owner deadline expiry
+            is a TimeoutError; it does not fabricate an HIO transport error.
     """
-    Sends messages to all current witnesses of given identifier (from hab) and waits
-    for receipts from each of those witnesses and propagates those receipts to each
-    of the other witnesses after receiving the complete set.
 
-    Builds and sends qry/tel queries, pushing the raw sent message to `sent`.
-    The response parsing happens elsewhere (e.g. mailbox or HTTP response handlers).
-
-    Could be enhanced to have a `once` method that runs once and cleans up
-    and an `all` method that runs and waits for more messages to receipt.
-    """
-
-    def __init__(self, hby, reger=None, msgs=None, klas=None, **kwa):
+    def __init__(self, hby, reger=None, msgs=None, klas=None, queryTimeout=30.0, **kwa):
         """Initialize with a message queue and optional messenger class.
 
         Parameters:
@@ -520,7 +525,12 @@ class WitnessInquisitor(doing.DoDoer):
             reger (Reger | None): optional registry database handle.
             msgs (Deck): query requests built by `query`/`telquery`.
             klas (type | None): messenger class, defaults to `HTTPMessenger`.
+            queryTimeout (float): maximum scheduler seconds for one dispatch attempt.
         """
+        self.queryTimeout = float(queryTimeout)
+        if not math.isfinite(self.queryTimeout) or self.queryTimeout <= 0.0:
+            raise ValueError("queryTimeout must be finite and positive")
+        self.failures = decking.Deck()
         self.hby = hby
         self.reger = reger
         self.klas = klas if klas is not None else HTTPMessenger
@@ -532,13 +542,7 @@ class WitnessInquisitor(doing.DoDoer):
                                tock=hby.tocks["witnessInquisitor"])], **kwa)
 
     def msgDo(self, tymth=None, tock=0.0, **opts):
-        """
-        Doer loop that sends one query to one selected endpoint.
-
-        For all msgs, select a random witness from Habitat's current set of witnesses
-        send the msg and process all responses (KEL replays, RCTs, etc)
-        Pushes the raw sent message to self.sent to signal completion.
-        """
+        """Send each introduction/query batch, retaining failure without stalling the queue."""
         self.wind(tymth)
         _ = (yield tock)
 
@@ -584,11 +588,22 @@ class WitnessInquisitor(doing.DoDoer):
                     logger.error(f"must have location in endpoint to query for pre={pre}")
                     continue
 
-                witer = messengerFrom(hab=hab, pre=ctrl, urls=locs)
+                wit, urls = ctrl, locs
             else:
                 wit = random.choice(wits)
-                witer = messenger(hab, wit)
+                urls = hab.fetchUrls(eid=wit)
 
+            try:
+                witer = messengerFrom(hab=hab, pre=wit, urls=urls)
+            except (OSError, ValueError, kering.ConfigurationError) as ex:
+                # OSError: address lookup or client setup failed.
+                # ValueError: invalid endpoint options.
+                # ConfigurationError: no usable endpoint scheme.
+                self._recordFailure(evt, wit, ex)
+                yield tock  # Give other doers a turn before the next queued attempt.
+                continue
+
+            stop = self.tyme + self.queryTimeout
             self.extend([witer])
 
             msg = hab.query(target, src=witer.wit, route=r, query=q)  # Query for remote pre Event
@@ -599,12 +614,31 @@ class WitnessInquisitor(doing.DoDoer):
 
             witer.msgs.append(bytearray(msg))
 
-            while not witer.sent:
+            # The introduction may produce several HTTP responses because one introduction is a
+            # batch of CESR messages that HTTPMessenger splits into one HTTP POST per CESR message.
+            # Wait for introduction batch completion prior to appending query completion to 'sent'.
+            while not witer.idle:
+                if witer.failed:
+                    self._recordFailure(evt, wit, witer.error)
+                    self.remove([witer])
+                    break
+                if self.tyme >= stop:
+                    self._recordFailure(evt, wit, TimeoutError(
+                        "witness query dispatch deadline expired"))
+                    self.remove([witer])  # Exit closes the client and its parser children.
+                    break
                 yield tock
-
-            self.sent.append(witer.sent.popleft())
+            else:
+                # Successful completion takes precedence over a later transport close.
+                self.sent.append(witer.sent.pop())  # The query was queued last.
 
             yield tock
+
+    def _recordFailure(self, query, wit, error):
+        """Retain one dispatch failure and log enough context to identify its query."""
+        self.failures.append(dict(query=query, wit=wit, error=error))
+        logger.error("Witness query dispatch failed: src=%s target=%s route=%s wit=%s: %s: %s",
+                     query["src"], query["target"], query["r"], wit, type(error).__name__, error)
 
     def query(self, pre, r="logs", sn='0', fn='0', src=None, hab=None, anchor=None, wits=None, **kwa):
         """Create, sign, and queue a `qry` KEL query request against the attester for the prefix for later sending.
