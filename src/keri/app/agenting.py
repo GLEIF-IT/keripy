@@ -802,12 +802,17 @@ class TCPMessenger(doing.DoDoer):
         self.wind(tymth)
         _ = (yield tock)
 
-        up = urlparse(self.url)
-        if up.scheme != kering.Schemes.tcp:
-            raise ValueError(f"invalid scheme {up.scheme} for TcpWitnesser")
-
-        self.client = client = clienting.Client(host=up.hostname, port=up.port,
-                                                tymth=self.tymth)
+        try:
+            up = urlparse(self.url)
+            if up.scheme != kering.Schemes.tcp:
+                raise ValueError(f"invalid scheme {up.scheme} for TcpWitnesser")
+            self.client = client = clienting.Client(host=up.hostname, port=up.port,
+                                                    tymth=self.tymth)
+        except (OSError, ValueError) as ex:
+            # OSError: address resolution or transport setup failed.
+            # ValueError: the endpoint or client options are invalid.
+            self._fail(ex)
+            return
         self.parser = parsing.Parser(ims=client.rxbs,
                                      framed=True,
                                      kvy=self.kevery)
@@ -870,7 +875,8 @@ class TCPMessenger(doing.DoDoer):
         """Retain the first cause and bytes not locally sent, without clearing work."""
         if not self.failed:
             self.error = error
-            self.unsent = len(self.client.txbs) + sum(map(len, self.msgs))
+            buffered = len(self.client.txbs) if self.client is not None else 0
+            self.unsent = buffered + sum(map(len, self.msgs))
 
     def msgDo(self, tymth=None, tock=0.0, **opts):
         """Doer loop that parses inbound TCP messages into the Kevery."""

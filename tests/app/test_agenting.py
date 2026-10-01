@@ -124,6 +124,21 @@ def connectedTcpMessenger():
             yield messenger, next(iter(server.ixes.values())), doist
 
 
+def test_tcp_messenger_fails_on_invalid_endpoint():
+    """An invalid endpoint fails before client creation, retaining the error and queued bytes."""
+    with habbing.openHab(name="tcp-startup", temp=True) as (_, hab):
+        payload = hab.makeOwnInception()
+        messenger = agenting.TCPMessenger(
+            hab=hab, wit=hab.pre, url="tcp://127.0.0.1:invalid",
+            msgs=agenting.decking.Deck([payload]))
+        with openDoist(doers=[messenger], tock=0.03125, limit=1.0) as doist:
+            doist.recur()  # Client setup parses the invalid port on its first turn.
+            assert messenger.done and isinstance(messenger.error, ValueError)
+            assert messenger.client is None and messenger.unsent == len(payload)
+            assert list(messenger.msgs) == [payload] and not messenger.sent
+            assert not messenger.idle and not messenger.deeds
+
+
 def test_tcp_messenger_bounds_refused_connection():
     """Stop refused connection attempts after four ticks of logical scheduler time.
     HIO socket reopens do not reset the deadline; failure retains outstanding work
