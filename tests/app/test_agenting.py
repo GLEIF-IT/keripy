@@ -8,7 +8,8 @@ import socket
 import select
 import struct
 import ssl
-from contextlib import closing
+from contextlib import closing, contextmanager
+from types import SimpleNamespace
 
 import falcon
 import pytest
@@ -21,7 +22,7 @@ from keri import kering, core
 from keri.core import coring, serdering
 from keri.core.coring import Seqner
 from keri.help import nowIso8601
-from keri.app import habbing, indirecting, agenting, directing
+from keri.app import habbing, indirecting, agenting, directing, storing
 from keri.db import basing, dbing
 from keri.vdr import eventing, viring
 from tests.support.scheduling import openDoist
@@ -1059,6 +1060,243 @@ class PublishDoer(doing.DoDoer):
 
         self.remove(self.toRemove)
         return True
+
+
+class QueryHttpPeer:
+    """Controlled HTTP endpoint for query rejection and timeout tests.
+
+    Attributes:
+        wit (str): peer AID used for endpoint registration and query addressing.
+        firstResponse (str): first-query behavior: "rejected" sends 503;
+            "unanswered" starts a response whose body never completes.
+        queries (int): number of received qry messages, excluding introductions.
+    """
+
+    def __init__(self, wit, firstResponse):
+        """Set the peer AID and first-query behavior; later requests receive 204."""
+        self.wit = wit
+        self.firstResponse = firstResponse
+        self.queries = 0
+
+    def on_post(self, req, rep):
+        """Read Falcon's request and set its response, applying the first-query fault."""
+        serder = serdering.SerderKERI(raw=req.bounded_stream.read())
+        rep.status = falcon.HTTP_204
+        if serder.ilk != "qry":
+            return  # Introductions succeed; only the first query is rejected or stalled.
+        self.queries += 1
+        if self.queries == 1:
+            if self.firstResponse == "rejected":
+                rep.status = falcon.HTTP_503
+            elif self.firstResponse == "unanswered":
+                # A stalled server response producer exercises real HIO HTTP I/O.
+                rep.status = falcon.HTTP_200
+                rep.stream = self.stalledResponse()
+
+    @staticmethod
+    def stalledResponse():
+        """Yield no body data indefinitely so HIO keeps the HTTP response incomplete."""
+        while True:
+            yield b""
+
+
+@contextmanager
+def openQueryHttpPeer(*, firstResponse):
+    """Own temporary habitats, endpoint registration, and HTTP/scheduler resources.
+
+    Tests queue their own queries and advance the scheduler explicitly. The peer
+    acknowledges CESR requests without running witness query-processing logic.
+    """
+    with habbing.openHab(name="query-peer", temp=True, transferable=False) as (_, peerHab), \
+            habbing.openHby(name="query-sender", temp=True) as hby:
+        hab = hby.makeHab(name="query-sender")
+        peer = QueryHttpPeer(peerHab.pre, firstResponse=firstResponse)
+        app = falcon.App()
+        app.add_route("/", peer)
+        servant = serving.Server(host="127.0.0.1", port=0)
+        server = http.Server(app=app, servant=servant)
+        try:
+            assert server.reopen()  # Allocate a loopback port before registering the endpoint.
+            servant.eha = servant.ha
+            hby.db.locs.pin(keys=(peer.wit, kering.Schemes.http),
+                            val=basing.LocationRecord(url=f"http://127.0.0.1:{servant.ha[1]}"))
+            inquisitor = agenting.WitnessInquisitor(hby=hby)
+            with openDoist(doers=[http.ServerDoer(server=server), inquisitor],
+                           tock=0.03125, limit=60.0) as doist:
+                yield hab, inquisitor, peer, doist
+        finally:
+            server.close()
+
+
+def advanceQueryUntil(doist, condition, message):
+    """Progress real client/server I/O with a wall-clock guard, not an attempt deadline."""
+    deadline = time.monotonic() + 3.0
+    while not condition():
+        assert time.monotonic() < deadline, message
+        doist.recur()
+        time.sleep(0.001)  # Allow OS progress while the logical scheduler runs quickly.
+
+
+@contextmanager
+def openQueryWitness(*, ownWitness=False):
+    """Own a real HTTP witness, its mailbox, a target KEL, and a separate querier.
+
+    Seed only the witness with the target's events. Query submission, introduction
+    delivery, and scheduler progress remain explicit in the test.
+    """
+    with (
+        habbing.openHby(name="query-witness", temp=True) as witnessHby,
+        habbing.openHby(name="query-controller", temp=True) as controllerHby,
+        habbing.openHby(name="query-target", temp=True) as targetHby,
+        dbing.openLMDB(cls=storing.Mailboxer, name="query-witness", temp=True) as mailbox,
+    ):
+        # setupWitness's HTTP server maps port zero to 80, so supply an ephemeral port.
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        doers = indirecting.setupWitness(hby=witnessHby, alias="query-witness",
+                                        mbx=mailbox, tcpPort=None, httpPort=port)
+        witness = witnessHby.habByName("query-witness")
+        target = targetHby.makeHab(name="query-target", wits=[witness.pre])
+        start = next(doer for doer in doers if isinstance(doer, indirecting.WitnessStart))
+        hab = controllerHby.makeHab(name="querier", wits=[witness.pre] if ownWitness else [])
+        # Signed endpoint records let the witness route the eventual replay to its mailbox.
+        controllerHby.psr.parse(ims=witness.makeOwnInception())
+        controllerHby.psr.parse(ims=witness.makeLocScheme(
+            url=f"http://127.0.0.1:{port}", scheme=kering.Schemes.http))
+        controllerHby.psr.parse(ims=hab.makeEndRole(eid=witness.pre, role=kering.Roles.mailbox))
+        target.rotate()
+        start.parser.ims.extend(target.replay())
+        inquisitor = agenting.WitnessInquisitor(hby=controllerHby)
+        with openDoist(doers=[*doers, inquisitor], tock=0.03125, limit=60.0) as doist:
+            yield SimpleNamespace(hab=hab, target=target, witness=witness, mailbox=mailbox,
+                                  inbound=start.parser.ims, inquisitor=inquisitor, doist=doist)
+
+
+@pytest.mark.parametrize("ownWitness", [False, True], ids=["with-introduction", "without-introduction"])
+def test_witness_inquisitor_queries_real_http_witness(ownWitness):
+    """A real witness processes the query and stores the requested replay after dispatch."""
+    with openQueryWitness(ownWitness=ownWitness) as session:
+        hab, witness, inquisitor, doist = session.hab, session.witness, session.inquisitor, session.doist
+        if ownWitness:
+            # An existing witness already knows its controller and authorized mailbox role.
+            session.inbound.extend(hab.replyEndRole(cid=hab.pre))
+            advanceQueryUntil(doist, lambda: hab.pre in witness.kevers,
+                              "witness did not learn its controller")
+        else:
+            hab.rotate()  # The automatically sent introduction contains several CESR messages.
+            assert hab.pre not in witness.kevers
+        assert session.target.pre not in hab.kevers
+        inquisitor.query(pre=session.target.pre, src=hab.pre, wits=[witness.pre])
+        advanceQueryUntil(doist, lambda: inquisitor.sent or inquisitor.failures,
+                          "witness query dispatch did not finish")
+        assert not inquisitor.failures
+        response = inquisitor.sent.popleft()
+        assert response.status == 204
+        # HIO retains the originating request, identifying the query without a test-only response header.
+        assert serdering.SerderKERI(raw=response.request["body"]).ilk == "qry"
+        topic = f"{hab.pre}/replay"
+        advanceQueryUntil(doist, lambda: len(session.mailbox.getTopicMsgs(topic)) == 2,
+                          "witness did not store the target KEL replay")
+        assert witness.kevers[hab.pre].sn == hab.kever.sn
+        # Replay through the querier's real parser proves the returned KEL is usable.
+        for msg in session.mailbox.getTopicMsgs(topic):
+            hab.psr.parse(ims=bytearray(msg))
+        assert hab.kevers[session.target.pre].serder.said == session.target.kever.serder.said
+
+
+def test_witness_inquisitor_reports_tcp_query_after_introduction():
+    """The TCP cue contains the query bytes rather than the preceding introduction."""
+    with habbing.openHab(name="query-tcp-peer", temp=True, transferable=False) as (_, peerHab), \
+            habbing.openHby(name="query-tcp-sender", temp=True) as hby:
+        hab = hby.makeHab(name="query-tcp-sender")
+        server = serving.Server(host="127.0.0.1", port=0)
+        assert server.reopen()
+        server.eha = server.ha
+        hby.db.locs.pin(keys=(peerHab.pre, kering.Schemes.tcp),
+                        val=basing.LocationRecord(url=f"tcp://127.0.0.1:{server.ha[1]}"))
+        inquisitor = agenting.WitnessInquisitor(hby=hby)
+        inquisitor.query(pre=hab.pre, src=hab.pre, wits=[peerHab.pre])
+        # The real TCP peer permits transmission without imposing a response policy.
+        with openDoist(doers=[serving.ServerDoer(server=server), inquisitor],
+                       tock=0.03125, limit=5.0) as doist:
+            advanceQueryUntil(doist, lambda: inquisitor.sent, "query transmission did not complete")
+            assert serdering.SerderKERI(raw=inquisitor.sent.popleft()).ilk == "qry"
+
+
+def test_witness_inquisitor_continues_after_rejected_query():
+    """An HTTP rejection is retained and cleaned up without blocking the next query."""
+    with openQueryHttpPeer(firstResponse="rejected") as (hab, inquisitor, peer, doist):
+        for sn in ("0", "1"):
+            inquisitor.query(pre=hab.pre, src=hab.pre, sn=sn, wits=[peer.wit])
+        firstRequest = inquisitor.msgs[0]
+        doist.recur()  # The owner creates and schedules the first messenger.
+        first = next(child for child in inquisitor.doers if isinstance(child, agenting.HTTPMessenger))
+        advanceQueryUntil(doist, lambda: inquisitor.sent, "rejection blocked the next query")
+        assert peer.queries == 2 and len(inquisitor.sent) == 1
+        assert inquisitor.sent.popleft().status == 204
+        assert len(inquisitor.failures) == 1
+        failure = inquisitor.failures.popleft()
+        assert failure == dict(query=firstRequest, wit=peer.wit, error=first.error)
+        assert first.failedResponse.status == 503
+        assert first not in inquisitor.doers and not first.deeds
+        assert not first.client.connector.opened
+
+
+def test_witness_inquisitor_continues_after_query_timeout():
+    """Owner expiry closes an unanswered request and lets the next query complete."""
+    with openQueryHttpPeer(firstResponse="unanswered") as (hab, inquisitor, peer, doist):
+        for sn in ("0", "1"):
+            inquisitor.query(pre=hab.pre, src=hab.pre, sn=sn, wits=[peer.wit])
+        firstRequest = inquisitor.msgs[0]
+        doist.recur()  # Capture the active messenger before its attempt expires.
+        first = next(child for child in inquisitor.doers if isinstance(child, agenting.HTTPMessenger))
+        advanceQueryUntil(doist, lambda: peer.queries == 1, "peer did not receive the first query")
+        assert not inquisitor.sent and not inquisitor.failures
+        # The query reached the server; expire the owner's scheduler-time budget.
+        doist.tyme += inquisitor.queryTimeout + doist.tock
+        advanceQueryUntil(doist, lambda: inquisitor.sent, "timeout blocked the next query")
+        assert peer.queries == 2 and len(inquisitor.sent) == 1
+        assert inquisitor.sent.popleft().status == 204
+        assert len(inquisitor.failures) == 1
+        failure = inquisitor.failures.popleft()
+        assert failure["query"] is firstRequest and failure["wit"] == peer.wit
+        assert isinstance(failure["error"], TimeoutError)
+        assert first.client.connector.error is None  # Owner expiry is not an HIO socket failure.
+        assert first not in inquisitor.doers and not first.deeds
+        assert not first.client.connector.opened
+
+
+@pytest.mark.parametrize("scheme", ["http", "tcp"])
+def test_witness_inquisitor_retains_endpoint_errors(scheme):
+    """Malformed endpoints are reported per attempt without stopping the inquisitor."""
+    with habbing.openHab(name="query-invalid-peer", temp=True, transferable=False) as (_, peer), \
+            habbing.openHby(name="query-invalid-sender", temp=True) as hby:
+        hab = hby.makeHab(name="query-invalid-sender")
+        hby.db.locs.pin(keys=(peer.pre, scheme),
+                        val=basing.LocationRecord(url=f"{scheme}://127.0.0.1:invalid"))
+        inquisitor = agenting.WitnessInquisitor(hby=hby)
+        for sn in ("0", "1"):
+            inquisitor.query(pre=hab.pre, src=hab.pre, sn=sn, wits=[peer.pre])
+        with openDoist(doers=[inquisitor], tock=0.03125, limit=1.0) as doist:
+            while len(inquisitor.failures) < 2:
+                assert doist.tyme < doist.limit, "endpoint failure stopped queue progress"
+                previous = len(inquisitor.failures)
+                doist.recur()
+                # Even synchronous HTTP setup failures give the scheduler a turn between attempts.
+                assert len(inquisitor.failures) <= previous + 1
+            assert all(isinstance(failure["error"], ValueError) for failure in inquisitor.failures)
+            assert not inquisitor.sent and not inquisitor.msgs
+            assert not any(isinstance(child, (agenting.HTTPMessenger, agenting.TCPMessenger))
+                           for child in inquisitor.doers)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_witness_inquisitor_requires_finite_positive_timeout(timeout):
+    """Reject budgets that cannot bound a query attempt."""
+    with habbing.openHby(name="query-timeout", temp=True) as hby:
+        with pytest.raises(ValueError, match="queryTimeout must be finite and positive"):
+            agenting.WitnessInquisitor(hby=hby, queryTimeout=timeout)
 
 
 def test_witness_inquisitor(mockHelpingNowUTC, seeder):
