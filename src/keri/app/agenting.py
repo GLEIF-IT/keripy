@@ -7,6 +7,8 @@ keri.app.agenting module
 import json
 import math
 import random
+from dataclasses import dataclass, field
+from uuid import uuid4
 from urllib.parse import urlencode, urlparse, urljoin
 
 from hio import hioing
@@ -345,158 +347,219 @@ class Receiptor(doing.DoDoer):
             yield tock
 
 
+@dataclass(frozen=True)
+class WitnessReceiptResult:
+    """One local attempt's verified receipts and delivery outcomes.
+
+    token identifies the attempt; pre/sn/said identify its event. witnesses and
+    threshold describe that event's establishment state, not the latest state.
+    receipts names witnesses whose signatures are stored in the verified DB.
+    propagated names witnesses whose queued delivery work completed locally;
+    it does not assert remote durable storage. errors retains per-witness causes;
+    error holds an invalid-request failure before witness processing.
+    """
+    token: str
+    pre: str | None
+    sn: int | None
+    said: str | None = None
+    witnesses: tuple[str, ...] = ()
+    threshold: int | None = None
+    receipts: tuple[str, ...] = ()
+    propagated: tuple[str, ...] = ()
+    errors: dict[str, Exception] = field(default_factory=dict)
+    error: Exception | None = None
+
+    @property
+    def thresholdMet(self):
+        """Whether verified receipts satisfy this event's witness threshold."""
+        return self.threshold is not None and len(self.receipts) >= self.threshold
+
+    @property
+    def receiptsComplete(self):
+        """Whether every witness has supplied a verified receipt."""
+        return self.thresholdMet and len(self.receipts) == len(self.witnesses)
+
+    @property
+    def propagationComplete(self):
+        """Whether this attempt completed delivery to every witness."""
+        return self.receiptsComplete and len(self.propagated) == len(self.witnesses)
+
+
+@dataclass(frozen=True)
+class _WitnessReceiptRequest:
+    """Keep admission identity separate from the caller's legacy request dict."""
+    token: str
+    event: dict
+
+
 class WitnessReceiptor(doing.DoDoer):
-    """Witness receipt doer that sends events and propagates receipts.
+    """Send events, collect verified receipts, and propagate the receipt set.
 
-    Uses messenger doers to asynchronously send the event to each witness,
-    waits for receipts to arrive in `hab.db` (via mailbox processing), then
-    propagates the full receipt set across the witness group.
-
-    Could be enhanced to have a `once` method that runs once and cleans up
-    and an `all` method that runs and waits for more messages to receipt.
+    results contains one WitnessReceiptResult per terminal attempt. submit()
+    returns its unique token; legacy dicts in msgs receive a token when dequeued.
+    cues retains the existing full-completion notifications for legacy callers.
+    Transport errors do not erase verified receipts or imply threshold failure.
+    Cancellation releases children without emitting a completion result.
     """
 
-    def __init__(self, hby, msgs=None, cues=None, force=False, auths=None, **kwa):
-        """Initialize with queues and optional auth for witness endpoints.
+    def __init__(self, hby, msgs=None, cues=None, force=False, auths=None,
+                 results=None, **kwa):
+        """Initialize request, legacy completion, and correlated result queues.
 
         Parameters:
             hby (Habery): Habitat environment for identifier lookups.
-            msgs (Deck): receipt requests with `pre` and optional `sn`.
-            cues (Deck): completed request cues.
-            force (bool): resend receipts even if already complete.
-            auths (dict | None): optional map of wit AID to auth header value.
+            msgs (Deck): receipt requests with pre and optional integer sn.
+            cues (Deck): original requests after successful full propagation.
+            force (bool): propagate receipts even if already complete.
+            auths (dict | None): witness AID to authorization header value.
+            results (Deck): terminal WitnessReceiptResult outputs, independent of cues.
         """
         self.hby = hby
         self.force = force
         self.msgs = msgs if msgs is not None else decking.Deck()
         self.cues = cues if cues is not None else decking.Deck()
+        self.results = results if results is not None else decking.Deck()
         self.auths = auths if auths is not None else dict()
         self.idleTock = hby.tocks["witnessReceiptorIdle"]
-
         super(WitnessReceiptor, self).__init__(
             doers=[doing.doify(self.receiptDo,
                                tock=hby.tocks["witnessReceiptor"])], **kwa)
 
+    def submit(self, pre, sn=None):
+        """Queue an attempt and return its token without modifying domain identity."""
+        evt = dict(pre=pre)
+        if sn is not None:
+            evt["sn"] = sn
+        token = uuid4().hex
+        self.msgs.append(_WitnessReceiptRequest(token=token, event=evt))
+        return token
+
     def receiptDo(self, tymth=None, tock=0.0, **kwa):
-        """Doer loop that sends events to witnesses and propagates receipts.
-
-
-        Asynchronously processes witness receipt requests from self.msgs queue.
-        Sends any required delegation context, replays KEL for new witnesses,
-        posts the event, waits for receipts to be stored in `hab.db`, then
-        shares the full receipt set across witnesses. If `force` is false and
-        all receipts already exist, it skips resubmission.
-        Pushes the original request to self.cues to signal completion
-        """
+        """Process attempts serially; publish results only after their child cleanup."""
         self.wind(tymth)
-        _ = (yield tock)
-
+        yield tock
         while True:
             while self.msgs:
-                evt = self.msgs.popleft()
-                pre = evt["pre"]
-
-                if pre not in self.hby.habs:
-                    continue
-
-                hab = self.hby.habs[pre]
-
-                sn = evt["sn"] if "sn" in evt else hab.kever.sner.num
-                wits = hab.kever.wits
-
-                if len(wits) == 0:
-                    continue
-
-                msg = hab.makeOwnEvent(sn=sn)
-                ser = serdering.SerderKERI(raw=msg)
-
-                dgkey = dbing.dgKey(ser.preb, ser.saidb)
-
-                # Check before scheduling messenger children so a completed
-                # request does not leak no-work doers on resubmission.
-                wigs = hab.db.getWigs(dgkey)
-                completed = len(wigs) == len(wits)
-                if completed and not self.force:
+                request = self.msgs.popleft()
+                if isinstance(request, _WitnessReceiptRequest):
+                    token, evt = request.token, request.event
+                else:
+                    token, evt = uuid4().hex, request
+                result = yield from self.receiptAttempt(evt, token, tock)
+                self.results.append(result)
+                # Preserve legacy no-witness behavior and the completed fast path.
+                if result.witnesses and result.receiptsComplete and (
+                        result.propagationComplete or not self.force and not result.errors):
                     self.cues.push(evt)
+                yield tock
+            yield tock
+
+    def receiptAttempt(self, evt, token, tock):
+        """Resolve event state, collect receipts, and drain this attempt's children."""
+        pre, sn = evt.get("pre"), evt.get("sn")
+        try:
+            hab = self.hby.habs[pre]
+            sn = hab.kever.sner.num if sn is None else sn
+            if not isinstance(sn, int) or isinstance(sn, bool) or sn < 0:
+                raise ValueError("receipt sequence number must be a nonnegative integer")
+            msg = hab.makeOwnEvent(sn=sn)
+            ser = serdering.SerderKERI(raw=msg)
+            est = hab.kvy.fetchEstEvent(pre, sn)
+            wits = tuple(wit.qb64 for wit in hab.kvy.fetchWitnessState(pre, sn))
+            threshold = int(est.ked["bt"], 16)
+        except (KeyError, ValueError, kering.MissingEntryError) as ex:
+            return WitnessReceiptResult(token=token, pre=pre, sn=sn, error=ex)
+
+        dgkey = dbing.dgKey(ser.preb, ser.saidb)
+        witers, errors, propagated = [], {}, set()
+
+        def snapshot():
+            # getWigs contains verified signatures; count witness indices only once.
+            indices = {indexing.Siger(qb64b=bytes(wig)).index
+                       for wig in hab.db.getWigs(dgkey)}
+            return WitnessReceiptResult(
+                token=token, pre=pre, sn=sn, said=ser.said, witnesses=wits,
+                threshold=threshold, receipts=tuple(wit for i, wit in enumerate(wits)
+                                                     if i in indices),
+                propagated=tuple(wit for wit in wits if wit in propagated),
+                errors=dict(errors))
+
+        result = snapshot()
+        # Preserve #1655: already-complete work creates no messenger children.
+        if not wits or result.receiptsComplete and not self.force:
+            return result
+
+        try:
+            for wit in wits:
+                try:
+                    witer = messenger(hab, wit, auth=self.auths.get(wit))
+                except (kering.ConfigurationError, OSError, ValueError) as ex:
+                    # Endpoint configuration, socket setup, or invalid URL/options.
+                    errors[wit] = ex
                     continue
+                witers.append(witer)
+                self.extend([witer])
 
-                witers = []
-                for wit in wits:
-                    auth = self.auths[wit] if wit in self.auths else None
-                    witer = messenger(hab, wit, auth=auth)
-                    witers.append(witer)
-                    self.extend([witer])
-
-                if len(wigs) != len(wits):  # Send only when receipts are incomplete
-                    for idx, witer in enumerate(witers):
-                        wit = wits[idx]
-
-                        for dmsg in hab.db.cloneDelegation(hab.kever):
-                            witer.msgs.append(bytearray(dmsg))
-
-                        if ser.ked['t'] in (coring.Ilks.icp, coring.Ilks.dip) or \
-                                "ba" in ser.ked and wit in ser.ked["ba"]:  # Newly added witness, must catch up
-                            for fmsg in hab.db.clonePreIter(pre=pre):
-                                witer.msgs.append(bytearray(fmsg))
-
-                        witer.msgs.append(bytearray(msg))  # make a copy
-                        _ = (yield tock)
-
-                    while True: # wait for all receipts to arrive
-                        wigs = hab.db.getWigs(dgkey)
-                        if len(wigs) == len(wits):
-                            break
-                        _ = yield tock
-
-                # generate all rct msgs to send to all witnesses
-                awigers = [indexing.Siger(qb64b=bytes(wig)) for wig in wigs]
-
-                # make sure all witnesses have fully receipted KERL and know about each other
+            if not result.receiptsComplete:
                 for witer in witers:
-                    ewits = []
-                    wigers = []
-                    for i, wit in enumerate(wits):
-                        if wit == witer.wit:
-                            continue
-                        ewits.append(wit)
-                        wigers.append(awigers[i])
-
-                    if len(wigers) == 0:
-                        continue
-
-                    rctMsg = bytearray()
-
-                    # Now that the witnesses have not met each other, send them each other's receipts
-                    if ser.ked['t'] in (coring.Ilks.icp, coring.Ilks.dip):  # introduce new witnesses
-                        rctMsg.extend(schemes(self.hby.db, eids=ewits))
-                    elif ser.ked['t'] in (coring.Ilks.rot, coring.Ilks.drt) and \
-                            ("ba" in ser.ked and witer.wit in ser.ked["ba"]):  # Newly added witness, introduce to all
-                        rctMsg.extend(schemes(self.hby.db, eids=ewits))
-
-                    rserder = eventing.receipt(pre=ser.pre,
-                                               sn=sn,
-                                               said=ser.said)
-                    rctMsg.extend(eventing.messagize(serder=rserder, wigers=wigers))
-
-                    witer.msgs.append(rctMsg)
-                    _ = (yield tock)
+                    for dmsg in hab.db.cloneDelegation(hab.kever):
+                        witer.msgs.append(bytearray(dmsg))
+                    if ser.ilk in (coring.Ilks.icp, coring.Ilks.dip) or witer.wit in ser.ked.get("ba", []):
+                        for fmsg in hab.db.clonePreIter(pre=pre):
+                            witer.msgs.append(bytearray(fmsg))
+                    witer.msgs.append(bytearray(msg))
+                    yield tock
 
                 while True:
-                    done = True
-                    for witer in witers:
-                        if not witer.idle:
-                            yield self.idleTock
-                            done = False
-                            break
-                    if done:
+                    errors.update((witer.wit, witer.error) for witer in witers if witer.failed)
+                    result = snapshot()
+                    # Observe verified receipts before deciding what delivery failure means.
+                    if result.receiptsComplete:
                         break
+                    if errors:
+                        return result
+                    yield tock
 
-                self.remove(witers)
-
-                self.cues.push(evt)
+            # Index signatures by their witness index, not LMDB iteration order.
+            awigers = {}
+            for wig in hab.db.getWigs(dgkey):
+                siger = indexing.Siger(qb64b=bytes(wig))
+                awigers[siger.index] = siger
+            admitted = set()
+            for witer in witers:
+                ewits = [wit for wit in wits if wit != witer.wit]
+                wigers = [awigers[i] for i, wit in enumerate(wits) if wit != witer.wit]
+                if not wigers:
+                    admitted.add(witer.wit)  # One witness needs no cross-witness receipts.
+                    continue
+                if witer.failed:
+                    errors[witer.wit] = witer.error
+                    continue
+                rctMsg = bytearray()
+                if ser.ilk in (coring.Ilks.icp, coring.Ilks.dip) or witer.wit in ser.ked.get("ba", []):
+                    rctMsg.extend(schemes(self.hby.db, eids=ewits))
+                rserder = eventing.receipt(pre=ser.pre, sn=sn, said=ser.said)
+                rctMsg.extend(eventing.messagize(serder=rserder, wigers=wigers))
+                witer.msgs.append(rctMsg)
+                admitted.add(witer.wit)
                 yield tock
 
-            yield tock
+            while True:
+                for witer in witers:
+                    if witer.failed:
+                        errors[witer.wit] = witer.error
+                    # Local completion survives a later receive error, but only
+                    # if this attempt actually admitted the required fanout.
+                    if witer.wit in admitted and witer.idle:
+                        propagated.add(witer.wit)
+                # Consume failure explicitly: it must not leave the owner waiting
+                # on another child. Capture all current completions before cleanup.
+                if errors or all(witer.idle for witer in witers):
+                    return snapshot()
+                yield self.idleTock
+        finally:
+            # Also release owned children if the parent is cancelled mid-attempt.
+            self.remove(witers)
 
 
 class WitnessInquisitor(doing.DoDoer):
@@ -802,12 +865,17 @@ class TCPMessenger(doing.DoDoer):
         self.wind(tymth)
         _ = (yield tock)
 
-        up = urlparse(self.url)
-        if up.scheme != kering.Schemes.tcp:
-            raise ValueError(f"invalid scheme {up.scheme} for TcpWitnesser")
-
-        self.client = client = clienting.Client(host=up.hostname, port=up.port,
-                                                tymth=self.tymth)
+        try:
+            up = urlparse(self.url)
+            if up.scheme != kering.Schemes.tcp:
+                raise ValueError(f"invalid scheme {up.scheme} for TcpWitnesser")
+            self.client = client = clienting.Client(host=up.hostname, port=up.port,
+                                                    tymth=self.tymth)
+        except (OSError, ValueError) as ex:
+            # OSError: address resolution or transport setup failed.
+            # ValueError: the endpoint or client options are invalid.
+            self._fail(ex)
+            return
         self.parser = parsing.Parser(ims=client.rxbs,
                                      framed=True,
                                      kvy=self.kevery)
@@ -870,7 +938,8 @@ class TCPMessenger(doing.DoDoer):
         """Retain the first cause and bytes not locally sent, without clearing work."""
         if not self.failed:
             self.error = error
-            self.unsent = len(self.client.txbs) + sum(map(len, self.msgs))
+            buffered = len(self.client.txbs) if self.client is not None else 0
+            self.unsent = buffered + sum(map(len, self.msgs))
 
     def msgDo(self, tymth=None, tock=0.0, **opts):
         """Doer loop that parses inbound TCP messages into the Kevery."""

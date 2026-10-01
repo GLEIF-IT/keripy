@@ -907,6 +907,12 @@ class ReceiptDoer(doing.DoDoer):
                 break
             yield self.tock
 
+        while not witDoer.results:
+            yield self.tock
+        firstResult = witDoer.results.popleft()
+        assert firstResult.sn == 0 and firstResult.propagationComplete
+        assert not firstResult.errors
+
         # Controller should send endpoints between witnesses.  Check for Endpoints for each other:
         keys = (self.wanHab.pre, kering.Schemes.tcp)
         said = self.wilHab.db.lans.get(keys=keys)
@@ -930,6 +936,12 @@ class ReceiptDoer(doing.DoDoer):
             if len(wilWigs) == 3 and len(wanWigs) == 3 and len(wesWigs) == 3:
                 break
             yield self.tock
+
+        while not witDoer.results:
+            yield self.tock
+        secondResult = witDoer.results.popleft()
+        assert secondResult.sn == 1 and secondResult.propagationComplete
+        assert secondResult.token != firstResult.token and not secondResult.errors
 
         self.remove([witDoer])
         return True
