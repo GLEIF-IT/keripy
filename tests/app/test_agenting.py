@@ -99,9 +99,11 @@ def test_tcp_messenger_accounts_for_real_delivery(klas):
 
 
 @pytest.fixture
-def connectedTcpMessenger():
+def connectedTcpMessenger(request):
     """Connect a real messenger to a loopback server without sending application data.
     The HIO server stands in for a witness transport; tests control its peer socket.
+    Indirect parametrization supplies the messenger class through request.param;
+    tests without that parameter use the recurrent TCPMessenger.
     """
     with (
         habbing.openHab(name="tcp-outcome", temp=True) as (_, hab),
@@ -109,7 +111,8 @@ def connectedTcpMessenger():
     ):
         assert server.reopen()
         server.eha = server.ha  # Advertise the port assigned by the OS.
-        messenger = agenting.TCPMessenger(
+        messengerClass = getattr(request, "param", agenting.TCPMessenger)
+        messenger = messengerClass(
             hab=hab, wit=hab.pre, url=f"tcp://127.0.0.1:{server.ha[1]}",
         )
         with openDoist(doers=[messenger], tock=0.03125, limit=1.0) as doist:
@@ -124,11 +127,13 @@ def connectedTcpMessenger():
             yield messenger, next(iter(server.ixes.values())), doist
 
 
-def test_tcp_messenger_fails_on_invalid_endpoint():
+@pytest.mark.parametrize("messengerClass", [agenting.TCPMessenger, agenting.TCPStreamMessenger],
+                         ids=["recurrent", "stream"])
+def test_tcp_messenger_fails_on_invalid_endpoint(messengerClass):
     """An invalid endpoint fails before client creation, retaining the error and queued bytes."""
     with habbing.openHab(name="tcp-startup", temp=True) as (_, hab):
         payload = hab.makeOwnInception()
-        messenger = agenting.TCPMessenger(
+        messenger = messengerClass(
             hab=hab, wit=hab.pre, url="tcp://127.0.0.1:invalid",
             msgs=agenting.decking.Deck([payload]))
         with openDoist(doers=[messenger], tock=0.03125, limit=1.0) as doist:
@@ -139,7 +144,9 @@ def test_tcp_messenger_fails_on_invalid_endpoint():
             assert not messenger.idle and not messenger.deeds
 
 
-def test_tcp_messenger_bounds_refused_connection():
+@pytest.mark.parametrize("messengerClass", [agenting.TCPMessenger, agenting.TCPStreamMessenger],
+                         ids=["recurrent", "stream"])
+def test_tcp_messenger_bounds_refused_connection(messengerClass):
     """Stop refused connection attempts after four ticks of logical scheduler time.
     HIO socket reopens do not reset the deadline; failure retains outstanding work
     without producing a sent notification.
@@ -153,7 +160,7 @@ def test_tcp_messenger_bounds_refused_connection():
         endpoint.bind(("127.0.0.1", 0))
         tock = 0.03125  # Each recur() advances logical time by 1/32 second.
         first, second = b"first", b"second"
-        messenger = agenting.TCPMessenger(
+        messenger = messengerClass(
             hab=hab, wit=hab.pre, url=f"tcp://127.0.0.1:{endpoint.getsockname()[1]}",
             msgs=agenting.decking.Deck([first, second]), connectTimeout=4 * tock,
         )
@@ -187,6 +194,9 @@ def test_tcp_messenger_requires_finite_positive_connection_deadline(timeout):
                              connectTimeout=timeout)
 
 
+@pytest.mark.parametrize("connectedTcpMessenger",
+                         [agenting.TCPMessenger, agenting.TCPStreamMessenger],
+                         indirect=True, ids=["recurrent", "stream"])
 def test_tcp_messenger_receive_eof_still_sends(connectedTcpMessenger):
     """A peer closing only its send direction can still receive our queued message.
     Verify the bytes at the peer, not just the messenger's local completion cue.
@@ -217,6 +227,9 @@ def test_tcp_messenger_receive_eof_still_sends(connectedTcpMessenger):
     assert messenger.idle and not messenger.failed
 
 
+@pytest.mark.parametrize("connectedTcpMessenger",
+                         [agenting.TCPMessenger, agenting.TCPStreamMessenger],
+                         indirect=True, ids=["recurrent", "stream"])
 def test_tcp_messenger_retains_transmit_failure(connectedTcpMessenger):
     """A send failure preserves its cause and all unsent bytes, then closes the child.
     Shut down the socket's send direction so HIO observes a real broken pipe.
@@ -291,6 +304,9 @@ def test_tcp_messenger_keeps_sent_before_receive_failure(connectedTcpMessenger):
     assert client.cs is None and not messenger.deeds
 
 
+@pytest.mark.parametrize("connectedTcpMessenger",
+                         [agenting.TCPMessenger, agenting.TCPStreamMessenger],
+                         indirect=True, ids=["recurrent", "stream"])
 def test_tcp_messenger_retains_failure_before_admission(connectedTcpMessenger):
     """A peer reset observed before admission leaves all queued messages unsent.
     Let real HIO receive service set the error and closure flags; the messenger
@@ -321,6 +337,24 @@ def test_tcp_messenger_retains_failure_before_admission(connectedTcpMessenger):
     assert not client.txbs and not messenger.sent
     assert not messenger.messageInProgress and not messenger.idle
     assert client.cs is None and not messenger.deeds
+
+
+@pytest.mark.parametrize("connectedTcpMessenger", [agenting.TCPStreamMessenger], indirect=True)
+def test_tcp_stream_finishes_after_one_payload(connectedTcpMessenger):
+    """Close after one real send; queued extra work must not become a second success."""
+    messenger, remoter, doist = connectedTcpMessenger
+    first, second = b"one stream", b"not admitted"
+    messenger.msgs.extend([first, second])
+    deadline = time.monotonic() + 1.0
+    while not messenger.done or remoter.rxbs != first:
+        assert time.monotonic() < deadline, "stream payload did not arrive"
+        doist.recur()  # The messenger admits, sends, and then closes its own client.
+        remoter.serviceReceives()  # The bare peer proves actual byte delivery.
+        time.sleep(0.001)
+    assert list(messenger.sent) == [first] and not messenger.failed
+    assert list(messenger.msgs) == [second] and not messenger.messageInProgress
+    assert not messenger.idle  # The extra payload was never sent or discarded.
+    assert messenger.client.cs is None and not messenger.deeds
 
 
 def test_http_messenger_accounts_for_real_delivery():

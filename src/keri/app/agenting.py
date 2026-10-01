@@ -755,6 +755,8 @@ class TCPMessenger(doing.DoDoer):
         failed (bool): read-only property indicating whether error is retained.
     """
 
+    _closeAfterSend = False  # Stream specialization ends at local send completion.
+
     def __init__(self, hab, wit, url, msgs=None, sent=None, doers=None,
                  connectTimeout=30.0, **kwa):
         """Initialize TCP messenger with queues and parser wiring.
@@ -849,6 +851,8 @@ class TCPMessenger(doing.DoDoer):
                     self.sent.append(msg)
                     self.messageInProgress = False
                     msg = None
+                    if self._closeAfterSend:
+                        return  # A raw one-shot stream promises local send completion only.
 
                 client.serviceReceives()
                 if client.txCutoff:
@@ -893,89 +897,28 @@ class TCPMessenger(doing.DoDoer):
         return not self.msgs and not self.messageInProgress
 
 
-class TCPStreamMessenger(doing.DoDoer):
-    """Stream a CESR message to a witness via TCP and parse inbound receipts.
+class TCPStreamMessenger(TCPMessenger):
+    """Send one queued CESR stream and close after local transmission completes.
 
-    ``sent`` is a consumable notification queue, so lifecycle accounting is
-    kept separately in ``msgs`` and ``messageInProgress``. This messenger
-    remains recurrent after a successful send; terminal stream lifecycle is a
-    separate transport concern.
+    Reuse TCPMessenger's connection budget, directional transport checks, first
+    error/unsent accounting, and client/parser cleanup. Only the successful
+    lifetime differs: after the first payload drains, record it in sent and finish
+    before further receive service or message admission. A later receive failure
+    cannot invalidate this already-completed local send.
+
+    This is not a witness receipt or remote durability acknowledgment. Buffered
+    inbound material may be parsed while sending, but success does not wait for
+    a response. Owners must inspect failed rather than infer success from done.
+    No retry, receipt deadline, or established-send timeout is introduced.
+
+    Attributes:
+        connectTimeout, client, error, unsent, failed: inherited transport facts
+            with the same meaning as TCPMessenger.
+        _closeAfterSend (bool): end after one local send; additional queued work
+            remains unadmitted and non-idle instead of being reported as sent.
     """
 
-    def __init__(self, hab, wit, url, msgs=None, sent=None, doers=None, **kwa):
-        """Initialize TCP stream messenger with queues and parser wiring.
-
-        Parameters:
-            hab (Hab): habitat for KEL parsing and db access.
-            wit (str): qb64 witness identifier.
-            url (str): tcp endpoint URL for the witness.
-            msgs (Deck | None): outbound message queue.
-            sent (Deck | None): sent message queue.
-        """
-        self.hab = hab
-        self.wit = wit
-        self.url = url
-        self.messageInProgress = False
-        self.msgs = msgs if msgs is not None else decking.Deck()
-        self.sent = sent if sent is not None else decking.Deck()
-        self.parser = None
-        doers = doers if doers is not None else []
-        doers.extend([doing.doify(self.receiptDo)])
-
-        self.kevery = eventing.Kevery(db=self.hab.db,
-                                      **kwa)
-
-        super(TCPStreamMessenger, self).__init__(doers=doers)
-
-    def receiptDo(self, tymth=None, tock=0.0, **kwa):
-        """Doer loop that sends queued messages over TCP.
-
-        Pushes the original request to self.sent to signal completion
-        """
-        self.wind(tymth)
-        _ = (yield tock)
-
-        up = urlparse(self.url)
-        if up.scheme != kering.Schemes.tcp:
-            raise ValueError(f"invalid scheme {up.scheme} for TcpWitnesser")
-
-        client = clienting.Client(host=up.hostname, port=up.port)
-        self.parser = parsing.Parser(ims=client.rxbs,
-                                     framed=True,
-                                     kvy=self.kevery)
-
-        clientDoer = clienting.ClientDoer(client=client)
-        self.extend([clientDoer, doing.doify(self.msgDo)])
-
-        while True:
-            while not self.msgs:
-                yield tock
-
-            msg = self.msgs.popleft()
-            self.messageInProgress = True
-
-            client.tx(msg)  # send to connected remote
-
-            while client.txbs:
-                yield tock
-
-            self.sent.append(msg)
-            self.messageInProgress = False
-            yield tock
-
-    def msgDo(self, tymth=None, tock=0.0, **opts):
-        """Doer loop that parses inbound TCP messages into the Kevery."""
-        parser = self.parser.parsator(local=True)
-        while True:
-            try:
-                next(parser)
-            except StopIteration as ex:
-                return ex.value
-            yield tock
-
-    @property
-    def idle(self):
-        return not self.msgs and not self.messageInProgress
+    _closeAfterSend = True
 
 
 class HTTPMessenger(doing.DoDoer):
