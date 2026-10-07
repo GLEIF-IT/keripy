@@ -1,7 +1,7 @@
 
 .PHONY: build-keri build-witness-demo publish-keri-witness-demo publish-keri
 
-VERSION=1.2.15.dev0
+VERSION=1.2.15rc1
 REGISTRY=weboftrust
 IMAGE=keri
 LATEST_TAG=$(REGISTRY)/$(IMAGE):latest
