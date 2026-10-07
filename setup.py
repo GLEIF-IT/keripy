@@ -36,8 +36,8 @@ from os.path import splitext
 
 from setuptools import find_packages, setup
 setup(
-    name='keri',
-    version='1.2.15.dev0',  # also change in src/keri/__init__.py
+    name='gleif_keri',
+    version='1.2.15rc1',  # also change in src/keri/__init__.py
     license='Apache Software License 2.0',
     description='Key Event Receipt Infrastructure',
     long_description="KERI Decentralized Key Management Infrastructure",
