@@ -1,5 +1,45 @@
 # Change Log for keripy
 
+## GLEIF 1.2.15rc1 — 2026-10-07
+
+Release candidate for the GLEIF-maintained `gleif_keri` distribution. Python
+package metadata uses `1.2.15rc1`; runtime `keri.__version__` uses the equivalent
+SemVer spelling `1.2.15-rc1` so database migration comparisons remain valid.
+The import package remains `keri`. The GLEIF release tag is `v1.2.15rc1`.
+
+### Changes since GLEIF 1.2.14
+
+- Adopt `gleif_hio==0.6.20rc3` and restore bounded direct TCP response draining
+  after peer EOF, local receive shutdown, idle expiry, and transmit failure.
+  Reconcile stale Reactants without closing replacement connections
+  (GLEIF PRs #38, #40–#45).
+- Propagate the witness HTTP/HTTPS idle timeout, retain TCP/HTTP messenger
+  failures, bound initial connection establishment, and clean up one-shot stream
+  messengers after local transmission or terminal failure (#46–#49, #53).
+- Preserve group rotation membership, explicit empty rotation-member lists, and
+  Signify group/member linkage across database reload (#50).
+- Keep witness TCP connections open across receipt-collection idle gaps (#51).
+- Wait for the actual witness-query dispatch after any introduction; bound
+  dispatch attempts, retain failures, and allow subsequent queued queries to
+  progress (#54).
+- Publish as `gleif_keri` with RC package, runtime, and build versions (#55).
+- Constrain LMDB to `>=1.4.1,<3`: LMDB 3.0.0 rejects the existing duplicate-open
+  path in database cleaning. The regression fails with 3.0.0 and passes with
+  2.3.0; compatibility with LMDB 3 remains future work.
+
+### Scope and compatibility
+
+- Messenger success describes local transmission or an HTTP response; it does
+  not establish verified receipts or remote durability.
+- Multisig sync/add and durable mailbox acknowledgment are not included.
+  Existing ESSR behavior is accepted for this release; residual repairs are
+  deferred. KERIA Seeker repairs and downstream dependency adoption are separate.
+- Previously malformed group records are not automatically migrated.
+- `gleif_keri` and upstream `keri` share the same import namespace; install only
+  one distribution in an environment. The pinned `gleif_hio` similarly owns the
+  `hio` import namespace.
+- Docker Hub release tags are `gleif/keri:1.2.15rc1` and `gleif/keri:latest`.
+
 ## 1.2 release series
 
 This history was reconstructed on 2026-09-02 from exact PyPI source
