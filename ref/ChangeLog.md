@@ -1,5 +1,14 @@
 # Change Log for keripy
 
+## GLEIF 1.2.15 — 2026-10-14
+
+- Promote the 1.2.15rc1 implementation to the final `gleif_keri==1.2.15` release.
+- Pin `gleif_hio==0.6.20`, including its `multidict<7.1` compatibility bound.
+- Preserve the `lmdb<3` bound required by the existing database cleaning path.
+- Align package/runtime/build versions and CI dependency ownership assertions.
+- The import package remains `keri`; install neither upstream `keri` nor `hio`
+  alongside their GLEIF distributions.
+
 ## GLEIF 1.2.15rc1 — 2026-10-07
 
 Release candidate for the GLEIF-maintained `gleif_keri` distribution. Python
