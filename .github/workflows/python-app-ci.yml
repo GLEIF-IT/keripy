@@ -36,6 +36,7 @@ jobs:
           version: '0.13.4'
           python-version: '3.12.15'
           activate-environment: true
+          venv-path: ${{ runner.temp }}/keripy-venv
           enable-cache: false
       - name: Seed pip on macOS
         if: runner.os == 'macOS'
