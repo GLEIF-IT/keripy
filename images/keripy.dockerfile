@@ -10,13 +10,12 @@ RUN python -m pip install --no-cache-dir \
 FROM base AS builder
 RUN apk add --no-cache build-base libffi-dev libsodium-dev cargo
 WORKDIR /keripy
-COPY requirements-container.txt setup.py ./
+COPY setup.py ./
 COPY src/ src/
 RUN python -m pip install --no-cache-dir 'setuptools>=83.0.0' 'wheel>=0.46.2' \
     && python -m pip wheel --no-build-isolation --no-deps --wheel-dir /wheels .
 RUN python -m venv --without-pip /keripy/venv \
-    && python -m pip --python /keripy/venv install --no-cache-dir --require-hashes -r requirements-container.txt \
-    && python -m pip --python /keripy/venv install --no-deps /wheels/*.whl \
+    && python -m pip --python /keripy/venv install --no-cache-dir /wheels/*.whl \
     && python -m pip --python /keripy/venv check
 
 FROM base
