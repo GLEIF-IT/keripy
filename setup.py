@@ -37,7 +37,7 @@ from os.path import splitext
 from setuptools import find_packages, setup
 setup(
     name='gleif_keri',
-    version='1.2.17',  # also change in src/keri/__init__.py
+    version='1.2.18',  # also change in src/keri/__init__.py
     license='Apache Software License 2.0',
     description='Key Event Receipt Infrastructure',
     long_description="KERI Decentralized Key Management Infrastructure",
@@ -79,11 +79,11 @@ setup(
                         'lmdb>=1.4.1,<=1.8.1',
                         'pysodium>=0.7.17',
                         'blake3>=0.4.1',
-                        'msgpack>=1.0.8',
-                        'cbor2>=5.6.2',
-                        'multidict>=6.0.5',
+                        'msgpack>=1.2.1',
+                        'cbor2>=5.9.0',
+                        'multidict>=6.9.1,<7.1',
                         'ordered-set>=4.1.0',
-                        'gleif_hio==0.6.21',
+                        'gleif_hio==0.6.22',
                         'multicommand==1.0.0',
                         'jsonschema>=4.21.1',
                         'falcon>=3.1.3',
@@ -93,7 +93,7 @@ setup(
                         'mnemonic>=0.21',
                         'PrettyTable>=3.10.0',
                         'http_sfv>=0.9.9',
-                        'cryptography>=42.0.5',
+                        'cryptography>=50.0.0',
                         'semver>=3.0.2',
                         'qrcode>=7.4.2'
     ],
