@@ -1,49 +1,28 @@
-ARG BASE=python:3.12.3-alpine3.20
+ARG BASE=python:3.12.15-alpine3.23@sha256:3d0ca66b723a0ff2a7a6e424cc2d01443e1b7c75ffcc110145f75d0f4daf6d63
+FROM ${BASE} AS base
 
-FROM ${BASE} AS builder
+# Update platform trust and the system pip independently of application packages.
+RUN apk upgrade --no-cache && apk add --no-cache bash ca-certificates libsodium-dev binutils \
+    && update-ca-certificates
+RUN python -m pip install --no-cache-dir \
+    'pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70'
 
-RUN apk add --no-cache bash
-
-SHELL ["/bin/bash", "-c"]
-
-RUN apk add --no-cache \
-    curl \
-    build-base \
-    alpine-sdk \
-    libffi-dev \
-    libsodium \
-    libsodium-dev    
-
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-
+FROM base AS builder
+RUN apk add --no-cache build-base libffi-dev libsodium-dev cargo
 WORKDIR /keripy
-
-RUN python -m venv venv
-
-ENV PATH=/keripy/venv/bin:${PATH}
-
-RUN pip install --upgrade pip
-RUN mkdir /keripy/src
-
-COPY requirements.txt setup.py ./
-
-RUN . ${HOME}/.cargo/env
-RUN pip install -r requirements.txt
-
-# Runtime layer
-FROM ${BASE}
-
-RUN apk --no-cache add \
-    bash \
-    alpine-sdk \
-    libsodium-dev
-
-WORKDIR /keripy
-
-COPY --from=builder /keripy /keripy
+COPY setup.py ./
 COPY src/ src/
+RUN python -m pip install --no-cache-dir 'setuptools>=83.0.0' 'wheel>=0.46.2' \
+    && python -m pip wheel --no-build-isolation --no-deps --wheel-dir /wheels .
+RUN python -m venv --without-pip /keripy/venv \
+    && python -m pip --python /keripy/venv install --no-cache-dir /wheels/*.whl \
+    && python -m pip --python /keripy/venv check
 
+FROM base
+WORKDIR /keripy
+COPY --from=builder /keripy/venv /keripy/venv
+# Runtime installation is complete; omit installers and ensurepip's old bundle.
+RUN python -m pip uninstall -y pip \
+    && rm -rf /usr/local/lib/python3.12/ensurepip
 ENV PATH="/keripy/venv/bin:${PATH}"
-
-ENTRYPOINT [ "kli" ]
+ENTRYPOINT ["kli"]
