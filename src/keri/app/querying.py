@@ -3,10 +3,88 @@
 keri.app.storing module
 
 """
-from dataclasses import asdict
+from dataclasses import dataclass
 
 from hio.base import doing
 from keri.app import agenting
+from keri.db import dbing
+
+
+@dataclass(frozen=True)
+class KelTarget:
+    """An accepted KEL position, optionally pinned to an exact event digest."""
+
+    pre: str
+    sn: int
+    said: str | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.sn, int) or self.sn < 0:
+            raise ValueError("KEL target sequence number must be a nonnegative integer")
+
+    def satisfied(self, hby, reger=None):
+        kever = hby.kevers.get(self.pre)
+        if kever is None or kever.sn < self.sn:
+            return False
+        dig = hby.db.getKeLast(dbing.snKey(self.pre, self.sn))
+        return dig is not None and (self.said is None or bytes(dig).decode() == self.said)
+
+
+@dataclass(frozen=True)
+class AnchorTarget:
+    """An exact event seal in an accepted, fully witnessed anchoring event."""
+
+    pre: str
+    seal: dict
+
+    def satisfied(self, hby, reger=None):
+        return hby.db.fetchLastSealingEventByEventSeal(self.pre, seal=self.seal) is not None
+
+
+@dataclass(frozen=True)
+class KeyStateTarget:
+    """A saved notice from a specific source for an exact known state.
+
+    This is a pinned-state check, not a claim that a cached notice is fresh or
+    that the source has no newer state. Discovering 'latest' needs a separate
+    freshness policy before constructing this target.
+    """
+
+    pre: str
+    source: str
+    sn: int
+    said: str
+
+    def __post_init__(self):
+        if not isinstance(self.sn, int) or self.sn < 0:
+            raise ValueError("key-state target sequence number must be a nonnegative integer")
+
+    def satisfied(self, hby, reger=None):
+        saider = hby.db.knas.get(keys=(self.pre, self.source))
+        if saider is None:
+            return False
+        state = hby.db.ksns.get(keys=(saider.qb64,))
+        return (state is not None and state.i == self.pre and
+                int(state.s, 16) == self.sn and state.d == self.said)
+
+
+@dataclass(frozen=True)
+class TelTarget:
+    """An exact event in the verified TEL index, after anchor validation."""
+
+    pre: str
+    sn: int
+    said: str
+
+    def __post_init__(self):
+        if not isinstance(self.sn, int) or self.sn < 0:
+            raise ValueError("TEL target sequence number must be a nonnegative integer")
+
+    def satisfied(self, hby, reger=None):
+        if reger is None:
+            raise ValueError("TEL completion requires a Reger")
+        dig = reger.getTel(dbing.snKey(self.pre, self.sn))
+        return dig is not None and bytes(dig).decode() == self.said
 
 
 class QueryDoer(doing.DoDoer):
@@ -71,7 +149,8 @@ class LogQuerier(doing.DoDoer):
         self.hab = hab
         self.ksn = ksn
         self.witq = agenting.WitnessInquisitor(hby=self.hby)
-        self.witq.query(src=self.hab.pre, pre=self.ksn["i"])
+        self.target = KelTarget(self.ksn["i"], int(self.ksn["s"], 16), self.ksn["d"])
+        self.witq.query(src=self.hab.pre, pre=self.ksn["i"], completion=self.target)
         super(LogQuerier, self).__init__(doers=[self.witq], **opts)
 
     def recur(self, tyme, deeds=None):
@@ -80,8 +159,7 @@ class LogQuerier(doing.DoDoer):
         Usage:
             add result of doify on this method to doers list
         """
-        kever = self.hab.kevers[self.ksn["i"]]
-        if kever.sn >= int(self.ksn['s'], 16):
+        if self.target.satisfied(self.hby):
             self.remove([self.witq])
             return True
 
@@ -97,8 +175,9 @@ class SeqNoQuerier(doing.DoDoer):
         self.sn = sn
         self.fn = fn if fn is not None else 0
         self.witq = agenting.WitnessInquisitor(hby=self.hby)
+        self.target = KelTarget(self.pre, self.sn)
         self.witq.query(src=self.hab.pre, pre=self.pre,
-                        sn="{:x}".format(self.sn),
+                        completion=self.target, sn="{:x}".format(self.sn),
                         fn="{:x}".format(self.fn),
                         wits=wits)
         super(SeqNoQuerier, self).__init__(doers=[self.witq], **opts)
@@ -112,8 +191,7 @@ class SeqNoQuerier(doing.DoDoer):
         if self.pre not in self.hab.kevers:
             return False
 
-        kever = self.hab.kevers[self.pre]
-        if kever.sn >= self.sn:
+        if self.target.satisfied(self.hby):
             self.remove([self.witq])
             return True
 
@@ -128,7 +206,8 @@ class AnchorQuerier(doing.DoDoer):
         self.pre = pre
         self.anchor = anchor
         self.witq = agenting.WitnessInquisitor(hby=self.hby)
-        self.witq.query(src=self.hab.pre, pre=self.pre, anchor=anchor)
+        self.target = AnchorTarget(self.pre, anchor)
+        self.witq.query(src=self.hab.pre, pre=self.pre, anchor=anchor, completion=self.target)
         super(AnchorQuerier, self).__init__(doers=[self.witq], **opts)
 
     def recur(self, tyme, deeds=None):
@@ -140,7 +219,7 @@ class AnchorQuerier(doing.DoDoer):
         if self.pre not in self.hab.kevers:
             return False
 
-        if self.hby.db.fetchLastSealingEventByEventSeal(self.pre, seal=self.anchor):
+        if self.target.satisfied(self.hby):
             self.remove([self.witq])
             return True
 

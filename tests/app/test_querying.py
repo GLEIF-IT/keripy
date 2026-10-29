@@ -207,3 +207,61 @@ def test_query_not_found_escrow_idempotency():
                 subHab.kvy.processQueryNotFound()
         putDts.assert_not_called()
         assert subHab.db.qnfs.get(keys=qnfkey)
+
+
+def test_kel_and_anchor_targets_require_the_expected_accepted_event():
+    from keri.app.querying import KelTarget, AnchorTarget
+
+    with habbing.openHby(name="target-reader") as hby, habbing.openHab(name="target-writer") as (_, hab):
+        seal = dict(i=hab.pre, s="0", d=hab.iserder.said)
+        anchor = AnchorTarget(hab.pre, seal)
+        rotation = hab.rotate()
+        kel = KelTarget(hab.pre, 1, hab.kever.serder.said)
+        assert not kel.satisfied(hby) and not anchor.satisfied(hby)
+        hby.psr.parse(ims=bytearray(hab.makeOwnInception()))
+        assert not kel.satisfied(hby)  # Inception is insufficient for sequence one.
+        hby.psr.parse(ims=bytearray(rotation))
+        assert kel.satisfied(hby)
+        assert not KelTarget(hab.pre, 1, hab.iserder.said).satisfied(hby)
+        assert not anchor.satisfied(hby)
+        hby.psr.parse(ims=bytearray(hab.interact(data=[seal])))
+        assert anchor.satisfied(hby)
+
+
+def test_key_state_target_requires_validated_source_and_exact_state():
+    from keri.app.querying import KeyStateTarget
+
+    with habbing.openHby(name="notice-reader") as hby, habbing.openHab(name="notice-source") as (_, hab):
+        target = KeyStateTarget(hab.pre, hab.pre, 0, hab.iserder.said)
+        hby.psr.parse(ims=bytearray(hab.makeOwnInception()))
+        assert not target.satisfied(hby)  # A KEL event alone is not a saved notice.
+        reply = eventing.reply(route=f"/ksn/{hab.pre}", data=hab.kever.state()._asdict())
+        hby.psr.parse(ims=bytearray(hab.endorse(reply)))
+        assert target.satisfied(hby)
+        assert not KeyStateTarget(hab.pre, "another-source", 0, hab.iserder.said).satisfied(hby)
+        assert not KeyStateTarget(hab.pre, hab.pre, 1, hab.iserder.said).satisfied(hby)
+
+
+def test_tel_target_waits_for_anchor_validation():
+    import pytest
+    from keri import kering
+    from keri.app.querying import TelTarget
+    from keri.core import coring
+    from keri.vdr import eventing as veventing, viring
+
+    with habbing.openHby(name="tel-target") as hby, viring.openReger(name="tel-target") as reger:
+        hab = hby.makeHab(name="issuer")
+        vcp = veventing.incept(pre=hab.pre, baks=[], cnfg=[eventing.TraitDex.NoBackers])
+        target = TelTarget(vcp.pre, 0, vcp.said)
+        assert not target.satisfied(hby, reger)
+        with pytest.raises(ValueError, match="requires a Reger"):
+            target.satisfied(hby)
+        with pytest.raises(kering.MissingAnchorError):
+            veventing.Tever(serder=vcp, seqner=coring.Seqner(sn=hab.kever.sn),
+                           saider=coring.Saider(qb64=hab.kever.serder.said), db=hby.db, reger=reger)
+        assert not target.satisfied(hby, reger)  # Escrowed raw TEL bytes are insufficient.
+        hab.interact(data=[dict(i=vcp.pre, s="0", d=vcp.said)])
+        veventing.Tever(serder=vcp, seqner=coring.Seqner(sn=hab.kever.sn),
+                       saider=coring.Saider(qb64=hab.kever.serder.said), db=hby.db, reger=reger)
+        assert target.satisfied(hby, reger)
+        assert not TelTarget(vcp.pre, 0, hab.iserder.said).satisfied(hby, reger)

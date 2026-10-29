@@ -22,7 +22,7 @@ from keri import kering, core
 from keri.core import coring, serdering
 from keri.core.coring import Seqner
 from keri.help import nowIso8601
-from keri.app import habbing, indirecting, agenting, directing, storing
+from keri.app import habbing, indirecting, agenting, directing, storing, querying
 from keri.db import basing, dbing
 from keri.vdr import eventing, viring
 from tests.support.scheduling import openDoist
@@ -1211,19 +1211,124 @@ def test_witness_inquisitor_closes_successful_http_queries():
         for sn in ("0", "1"):
             inquisitor.query(pre=hab.pre, src=hab.pre, sn=sn, wits=[peer.wit])
             advanceQueryUntil(doist,
-                              lambda: any(isinstance(child, agenting.HTTPMessenger)
-                                          for child in inquisitor.doers),
+                              lambda: any(isinstance(child, agenting.QueryAttempt) and
+                                          child.messenger in child.doers for child in inquisitor.doers),
                               "query messenger was not scheduled")
-            messenger = next(child for child in inquisitor.doers
-                             if isinstance(child, agenting.HTTPMessenger))
+            attempt = next(child for child in inquisitor.doers
+                           if isinstance(child, agenting.QueryAttempt) and child.status is None)
+            messenger = attempt.messenger
             advanceQueryUntil(doist, lambda: inquisitor.sent or inquisitor.failures,
                               "query did not finish")
             assert not inquisitor.failures
             assert inquisitor.sent.popleft().status == 204
-            assert messenger not in inquisitor.doers
+            assert messenger not in attempt.doers
             assert not messenger.deeds
             assert messenger.client.connector.cs is None
         assert peer.queries == 2
+
+
+@contextmanager
+def openQueryTcpPeer():
+    """Real TCP peer whose replay timing is controlled by the test."""
+    with habbing.openHab(name="attempt-peer", temp=True, transferable=False) as (_, peer), \
+            habbing.openHby(name="attempt-controller", temp=True) as hby, \
+            habbing.openHab(name="attempt-target", temp=True) as (_, target):
+        hab = hby.makeHab(name="controller")
+        server = serving.Server(host="127.0.0.1", port=0)
+        assert server.reopen()
+        server.eha = server.ha
+        hby.db.locs.pin(keys=(peer.pre, kering.Schemes.tcp),
+                        val=basing.LocationRecord(url=f"tcp://127.0.0.1:{server.ha[1]}"))
+        inquisitor = agenting.WitnessInquisitor(hby=hby)
+        with openDoist(doers=[serving.ServerDoer(server=server), inquisitor],
+                       tock=0.03125, limit=60.0) as doist:
+            yield SimpleNamespace(hby=hby, hab=hab, target=target, peer=peer,
+                                  server=server, inquisitor=inquisitor, doist=doist)
+
+
+def test_query_attempt_waits_for_fragmented_tcp_replay_and_releases_each_socket():
+    with openQueryTcpPeer() as session:
+        iq, target, doist = session.inquisitor, session.target, session.doist
+        for sn in range(3):
+            if sn:
+                target.rotate()
+            completion = querying.KelTarget(target.pre, sn, target.kever.serder.said)
+            iq.query(pre=target.pre, src=session.hab.pre, wits=[session.peer.pre],
+                     completion=completion)
+            advanceQueryUntil(doist, lambda: iq.sent, "query was not transmitted")
+            iq.sent.clear()
+            attempt = next(child for child in iq.doers if isinstance(child, agenting.QueryAttempt)
+                           and child.status is None)
+            messenger = attempt.messenger
+            assert not iq.results  # Transmitted is not satisfied.
+            remoter = next(remote for remote in session.server.ixes.values() if not remote.cutoff)
+            replay = bytearray(target.replay())
+            remoter.tx(replay[:30])
+            advanceQueryUntil(doist, lambda: bool(messenger.client.rxbs), "fragment was not received")
+            for _ in range(5):
+                doist.recur()
+            assert attempt.status is None and messenger.client.cs is not None
+            remoter.tx(replay[30:])
+            advanceQueryUntil(doist, lambda: iq.results, "verified replay did not complete query")
+            assert iq.results.popleft()["status"] == "satisfied"
+            assert completion.satisfied(session.hby)
+            assert messenger.client.cs is None and not messenger.deeds
+            advanceQueryUntil(doist, lambda: attempt not in iq.doers, "finished attempt was retained")
+            assert not iq.failures
+            # Let the peer observe EOF before the next connection is selected.
+            advanceQueryUntil(doist, lambda: remoter.cutoff, "peer did not observe cleanup")
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "disconnect", "cancel"])
+def test_query_attempt_cleans_up_after_dispatch_without_response(outcome):
+    with openQueryTcpPeer() as session:
+        iq, doist = session.inquisitor, session.doist
+        iq.query(pre=session.target.pre, src=session.hab.pre, wits=[session.peer.pre],
+                 completion=querying.KelTarget(session.target.pre, 0))
+        advanceQueryUntil(doist, lambda: iq.sent, "query was not transmitted")
+        attempt = next(child for child in iq.doers if isinstance(child, agenting.QueryAttempt))
+        messenger = attempt.messenger
+        if outcome == "timeout":
+            doist.tyme += iq.queryTimeout + doist.tock
+        elif outcome == "disconnect":
+            # Abort both directions locally to exercise a terminal transport failure
+            # after dispatch. Receive-only EOF remains usable until the deadline.
+            messenger.client.close()
+        else:
+            iq.remove([attempt])
+        advanceQueryUntil(doist, lambda: iq.results, "attempt never terminated")
+        result = iq.results.popleft()
+        assert result["status"] == {"timeout": "timed_out", "disconnect": "failed",
+                                    "cancel": "cancelled"}[outcome]
+        assert messenger.client.cs is None and not messenger.deeds
+        advanceQueryUntil(doist, lambda: attempt not in iq.doers, "attempt was retained")
+        assert bool(iq.failures) == (outcome != "cancel")
+
+
+def test_query_attempt_http_teardown_precedes_local_state_completion():
+    with openQueryHttpPeer(firstResponse="accepted") as (hab, iq, peer, doist):
+        completion = querying.KelTarget(hab.pre, 1)
+        iq.query(pre=hab.pre, src=hab.pre, wits=[peer.wit], completion=completion)
+        advanceQueryUntil(doist, lambda: iq.sent, "HTTP dispatch did not finish")
+        attempt = next(child for child in iq.doers if isinstance(child, agenting.QueryAttempt))
+        assert attempt.messenger.client.connector.cs is None
+        assert not iq.results
+        hab.rotate()  # Stand-in for a separately scheduled mailbox parser accepting the target.
+        advanceQueryUntil(doist, lambda: iq.results, "accepted state was not observed")
+        assert iq.results.popleft()["status"] == "satisfied"
+
+
+def test_query_attempt_rejects_tcp_without_target_and_skips_satisfied_target():
+    with openQueryTcpPeer() as session:
+        iq, doist = session.inquisitor, session.doist
+        iq.query(pre=session.target.pre, src=session.hab.pre, wits=[session.peer.pre])
+        iq.query(pre=session.hab.pre, src=session.hab.pre, wits=[session.peer.pre],
+                 completion=querying.KelTarget(session.hab.pre, 0, session.hab.iserder.said))
+        advanceQueryUntil(doist, lambda: len(iq.results) == 2, "queries did not finish")
+        assert [result["status"] for result in iq.results] == ["failed", "satisfied"]
+        assert isinstance(iq.failures[0]["error"], kering.ConfigurationError)
+        assert not session.server.ixes and not iq.sent
+        assert not any(isinstance(child, agenting.QueryAttempt) for child in iq.doers)
 
 
 def test_witness_inquisitor_reports_tcp_query_after_introduction():
@@ -1237,7 +1342,8 @@ def test_witness_inquisitor_reports_tcp_query_after_introduction():
         hby.db.locs.pin(keys=(peerHab.pre, kering.Schemes.tcp),
                         val=basing.LocationRecord(url=f"tcp://127.0.0.1:{server.ha[1]}"))
         inquisitor = agenting.WitnessInquisitor(hby=hby)
-        inquisitor.query(pre=hab.pre, src=hab.pre, wits=[peerHab.pre])
+        inquisitor.query(pre=hab.pre, src=hab.pre, wits=[peerHab.pre],
+                         completion=querying.KelTarget(hab.pre, 1))
         # The real TCP peer permits transmission without imposing a response policy.
         with openDoist(doers=[serving.ServerDoer(server=server), inquisitor],
                        tock=0.03125, limit=5.0) as doist:
@@ -1251,8 +1357,11 @@ def test_witness_inquisitor_continues_after_rejected_query():
         for sn in ("0", "1"):
             inquisitor.query(pre=hab.pre, src=hab.pre, sn=sn, wits=[peer.wit])
         firstRequest = inquisitor.msgs[0]
-        doist.recur()  # The owner creates and schedules the first messenger.
-        first = next(child for child in inquisitor.doers if isinstance(child, agenting.HTTPMessenger))
+        advanceQueryUntil(doist, lambda: any(isinstance(child, agenting.QueryAttempt) and
+                          child.messenger in child.doers for child in inquisitor.doers),
+                          "first attempt was not scheduled")
+        first = next(child for attempt in inquisitor.doers if isinstance(attempt, agenting.QueryAttempt)
+                     for child in attempt.doers if isinstance(child, agenting.HTTPMessenger))
         advanceQueryUntil(doist, lambda: inquisitor.sent, "rejection blocked the next query")
         assert peer.queries == 2 and len(inquisitor.sent) == 1
         assert inquisitor.sent.popleft().status == 204
@@ -1270,8 +1379,11 @@ def test_witness_inquisitor_continues_after_query_timeout():
         for sn in ("0", "1"):
             inquisitor.query(pre=hab.pre, src=hab.pre, sn=sn, wits=[peer.wit])
         firstRequest = inquisitor.msgs[0]
-        doist.recur()  # Capture the active messenger before its attempt expires.
-        first = next(child for child in inquisitor.doers if isinstance(child, agenting.HTTPMessenger))
+        advanceQueryUntil(doist, lambda: any(isinstance(child, agenting.QueryAttempt) and
+                          child.messenger in child.doers for child in inquisitor.doers),
+                          "first attempt was not scheduled")
+        first = next(child for attempt in inquisitor.doers if isinstance(attempt, agenting.QueryAttempt)
+                     for child in attempt.doers if isinstance(child, agenting.HTTPMessenger))
         advanceQueryUntil(doist, lambda: peer.queries == 1, "peer did not receive the first query")
         assert not inquisitor.sent and not inquisitor.failures
         # The query reached the server; expire the owner's scheduler-time budget.
@@ -1298,7 +1410,8 @@ def test_witness_inquisitor_retains_endpoint_errors(scheme):
                         val=basing.LocationRecord(url=f"{scheme}://127.0.0.1:invalid"))
         inquisitor = agenting.WitnessInquisitor(hby=hby)
         for sn in ("0", "1"):
-            inquisitor.query(pre=hab.pre, src=hab.pre, sn=sn, wits=[peer.pre])
+            inquisitor.query(pre=hab.pre, src=hab.pre, sn=sn, wits=[peer.pre],
+                             completion=querying.KelTarget(hab.pre, 2))
         with openDoist(doers=[inquisitor], tock=0.03125, limit=1.0) as doist:
             while len(inquisitor.failures) < 2:
                 assert doist.tyme < doist.limit, "endpoint failure stopped queue progress"
@@ -1347,11 +1460,15 @@ def test_witness_inquisitor(mockHelpingNowUTC, seeder):
         qinWitq = agenting.WitnessInquisitor(hby=qinHby)
         # query up a few to make sure it still works
         stamp = nowIso8601()  # need same time stamp or not duplicate
-        qinWitq.query(src=qinHab.pre, pre=palHab.pre, stamp=stamp, wits=palHab.kever.wits)
-        qinWitq.query(src=qinHab.pre, pre=palHab.pre, stamp=stamp, wits=palHab.kever.wits)
-        qinWitq.query(src=qinHab.pre, pre=palHab.pre, stamp=stamp, wits=palHab.kever.wits)
+        qinWitq.query(src=qinHab.pre, pre=palHab.pre, stamp=stamp, wits=palHab.kever.wits,
+                       completion=querying.KelTarget(palHab.pre, 0, palHab.iserder.said))
+        qinWitq.query(src=qinHab.pre, pre=palHab.pre, stamp=stamp, wits=palHab.kever.wits,
+                       completion=querying.KelTarget(palHab.pre, 0, palHab.iserder.said))
+        qinWitq.query(src=qinHab.pre, pre=palHab.pre, stamp=stamp, wits=palHab.kever.wits,
+                       completion=querying.KelTarget(palHab.pre, 0, palHab.iserder.said))
         palWitq = agenting.WitnessInquisitor(hby=palHby)
-        palWitq.query(src=palHab.pre, pre=qinHab.pre, stamp=stamp, wits=qinHab.kever.wits)
+        palWitq.query(src=palHab.pre, pre=qinHab.pre, stamp=stamp, wits=qinHab.kever.wits,
+                       completion=querying.KelTarget(qinHab.pre, 0, qinHab.iserder.said))
 
         limit = 5.0
         tock = 0.03125
@@ -1377,3 +1494,23 @@ def test_witness_inquisitor(mockHelpingNowUTC, seeder):
 
         assert palHab.pre in qinHab.kevers
         assert qinHab.pre in palHab.kevers
+
+
+def test_query_attempt_pending_response_does_not_block_next_query():
+    with openQueryHttpPeer(firstResponse="accepted") as (hab, iq, peer, doist):
+        iq.query(pre=hab.pre, src=hab.pre, wits=[peer.wit],
+                 completion=querying.KelTarget(hab.pre, 2))
+        first = iq.msgs[0]
+        iq.query(pre=hab.pre, src=hab.pre, wits=[peer.wit],
+                 completion=querying.KelTarget(hab.pre, 1))
+        second = iq.msgs[1]
+        advanceQueryUntil(doist, lambda: len(iq.sent) == 2, "first wait blocked later dispatch")
+        assert not iq.results
+        hab.rotate()
+        advanceQueryUntil(doist, lambda: iq.results, "later query did not complete")
+        result = iq.results.popleft()
+        assert result["query"] is second and result["status"] == "satisfied"
+        doist.tyme += iq.queryTimeout + doist.tock
+        advanceQueryUntil(doist, lambda: iq.results, "earlier query never expired")
+        result = iq.results.popleft()
+        assert result["query"] is first and result["status"] == "timed_out"

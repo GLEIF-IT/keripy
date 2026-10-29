@@ -500,24 +500,16 @@ class WitnessReceiptor(doing.DoDoer):
 
 
 class WitnessInquisitor(doing.DoDoer):
-    """Dispatch queries to selected endpoints with bounded transport completion.
+    """Dispatch witness queries and own each bounded query attempt.
 
-    Each attempt includes any introduction and the query. Success in ``sent``
-    remains the query bytes for TCP or its HTTP response. Neither proves that
-    the requested KEL/TEL data has arrived; response processing happens elsewhere.
-    Failed attempts are logged and retained, then the next queued query can run.
+    ``sent`` retains its transport-only meaning. ``results`` reports terminal
+    attempt outcomes: satisfied, dispatched (legacy HTTP without a target),
+    failed, timed_out, or cancelled. TCP requires an explicit ``completion``
+    target with ``satisfied(hby, reger)``; see the targets in ``querying``.
     No retry or alternate-endpoint selection follows failure.
-
-    Attributes:
-        queryTimeout (float): finite positive per-attempt budget in scheduler
-            seconds, default 30.0. Covers connection, introduction, and query
-            transmission/HTTP response, starting when the messenger is scheduled.
-        failures (Deck): consumable dicts containing the original ``query``
-            request, selected ``wit``, and typed ``error``. Owner deadline expiry
-            is a TimeoutError; it does not fabricate an HIO transport error.
     """
 
-    def __init__(self, hby, reger=None, msgs=None, klas=None, queryTimeout=30.0, **kwa):
+    def __init__(self, hby, reger=None, msgs=None, klas=None, queryTimeout=20.0, **kwa):
         """Initialize with a message queue and optional messenger class.
 
         Parameters:
@@ -525,12 +517,13 @@ class WitnessInquisitor(doing.DoDoer):
             reger (Reger | None): optional registry database handle.
             msgs (Deck): query requests built by `query`/`telquery`.
             klas (type | None): messenger class, defaults to `HTTPMessenger`.
-            queryTimeout (float): maximum scheduler seconds for one dispatch attempt.
+            queryTimeout (float): total scheduler seconds for dispatch and verification.
         """
         self.queryTimeout = float(queryTimeout)
         if not math.isfinite(self.queryTimeout) or self.queryTimeout <= 0.0:
             raise ValueError("queryTimeout must be finite and positive")
         self.failures = decking.Deck()
+        self.results = decking.Deck()
         self.hby = hby
         self.reger = reger
         self.klas = klas if klas is not None else HTTPMessenger
@@ -542,13 +535,16 @@ class WitnessInquisitor(doing.DoDoer):
                                tock=hby.tocks["witnessInquisitor"])], **kwa)
 
     def msgDo(self, tymth=None, tock=0.0, **opts):
-        """Send each introduction/query batch, retaining failure without stalling the queue."""
+        """Schedule attempts; keep receiving queries independent of later dispatches."""
         self.wind(tymth)
         _ = (yield tock)
 
         while True:
-            while not self.msgs:
+            self.remove([child for child in self.doers
+                         if isinstance(child, QueryAttempt) and child.done])
+            if not self.msgs:
                 yield tock
+                continue
 
             evt = self.msgs.popleft()
             pre = evt["pre"]
@@ -558,13 +554,28 @@ class WitnessInquisitor(doing.DoDoer):
             q = evt["q"]
             wits = evt["wits"] if "wits" in evt else None
 
+            completion = evt.get("completion")
+            try:
+                if completion is not None and completion.satisfied(self.hby, self.reger):
+                    self.results.append(dict(query=evt, wit=None, status="satisfied"))
+                    yield tock
+                    continue
+            except ValueError as ex:
+                self._recordFailure(evt, None, ex)
+                yield tock
+                continue
+
             if "hab" in evt:
                 hab = evt["hab"]
             elif (hab := self.hby.habByPre(src)) is None:
+                self._recordFailure(evt, None, kering.ConfigurationError("query source habitat not found"))
+                yield tock
                 continue
 
             if not wits and pre not in self.hby.kevers:
-                logger.error(f"must have KEL for identifier to query {pre}")
+                self._recordFailure(evt, None, kering.ConfigurationError(
+                    f"must have KEL for identifier to query {pre}"))
+                yield tock
                 continue
 
             if not wits:
@@ -576,16 +587,22 @@ class WitnessInquisitor(doing.DoDoer):
                 elif Roles.witness in ends:
                     end = ends[Roles.witness]
                 else:
-                    logger.error(f"unable query: can not find a valid role for {pre}")
+                    self._recordFailure(evt, None, kering.ConfigurationError(
+                        f"unable query: can not find a valid role for {pre}"))
+                    yield tock
                     continue
 
                 if len(end.items()) == 0:
-                    logger.error(f"must have endpoint to query for pre={pre}")
+                    self._recordFailure(evt, None, kering.ConfigurationError(
+                        f"must have endpoint to query for pre={pre}"))
+                    yield tock
                     continue
 
                 ctrl, locs = random.choice(list(end.items()))
                 if len(locs.items()) == 0:
-                    logger.error(f"must have location in endpoint to query for pre={pre}")
+                    self._recordFailure(evt, None, kering.ConfigurationError(
+                        f"must have location in endpoint to query for pre={pre}"))
+                    yield tock
                     continue
 
                 wit, urls = ctrl, locs
@@ -595,55 +612,35 @@ class WitnessInquisitor(doing.DoDoer):
 
             try:
                 witer = messengerFrom(hab=hab, pre=wit, urls=urls)
+                if isinstance(witer, TCPMessenger) and completion is None:
+                    raise kering.ConfigurationError("TCP queries require an explicit completion target")
+                msg = hab.query(target, src=witer.wit, route=r, query=q)
+                kel = forwarding.introduce(hab, witer.wit)
+                if kel:
+                    witer.msgs.append(bytearray(kel))
+                witer.msgs.append(bytearray(msg))
             except (OSError, ValueError, kering.ConfigurationError) as ex:
-                # OSError: address lookup or client setup failed.
-                # ValueError: invalid endpoint options.
-                # ConfigurationError: no usable endpoint scheme.
                 self._recordFailure(evt, wit, ex)
-                yield tock  # Give other doers a turn before the next queued attempt.
+                yield tock
                 continue
 
-            stop = self.tyme + self.queryTimeout
-            self.extend([witer])
-
-            msg = hab.query(target, src=witer.wit, route=r, query=q)  # Query for remote pre Event
-
-            kel = forwarding.introduce(hab, witer.wit)
-            if kel:
-                witer.msgs.append(bytearray(kel))
-
-            witer.msgs.append(bytearray(msg))
-
-            # The introduction may produce several HTTP responses because one introduction is a
-            # batch of CESR messages that HTTPMessenger splits into one HTTP POST per CESR message.
-            # Wait for introduction batch completion prior to appending query completion to 'sent'.
-            while not witer.idle:
-                if witer.failed:
-                    self._recordFailure(evt, wit, witer.error)
-                    self.remove([witer])
-                    break
-                if self.tyme >= stop:
-                    self._recordFailure(evt, wit, TimeoutError(
-                        "witness query dispatch deadline expired"))
-                    self.remove([witer])  # Exit closes the client and its parser children.
-                    break
+            attempt = QueryAttempt(owner=self, query=evt, messenger=witer,
+                                   completion=completion, timeout=self.queryTimeout)
+            self.extend([attempt])
+            # Preserve ordered dispatch. A response wait does not block the next query.
+            while not attempt.dispatched and attempt.status is None:
                 yield tock
-            else:
-                # Successful completion takes precedence over a later transport close.
-                self.sent.append(witer.sent.pop())  # The query was queued last.
-                if isinstance(witer, HTTPMessenger):
-                    # HTTP has completed its response; TCP may still receive the queried KEL.
-                    self.remove([witer])
-
             yield tock
 
-    def _recordFailure(self, query, wit, error):
+    def _recordFailure(self, query, wit, error, status="failed"):
         """Retain one dispatch failure and log enough context to identify its query."""
         self.failures.append(dict(query=query, wit=wit, error=error))
-        logger.error("Witness query dispatch failed: src=%s target=%s route=%s wit=%s: %s: %s",
+        self.results.append(dict(query=query, wit=wit, status=status, error=error))
+        logger.error("Witness query failed: src=%s target=%s route=%s wit=%s: %s: %s",
                      query["src"], query["target"], query["r"], wit, type(error).__name__, error)
 
-    def query(self, pre, r="logs", sn='0', fn='0', src=None, hab=None, anchor=None, wits=None, **kwa):
+    def query(self, pre, r="logs", sn='0', fn='0', src=None, hab=None, anchor=None, wits=None,
+              completion=None, **kwa):
         """Create, sign, and queue a `qry` KEL query request against the attester for the prefix for later sending.
 
         Parameters:
@@ -655,6 +652,7 @@ class WitnessInquisitor(doing.DoDoer):
             hab (Hab | None): habitat used to sign and route the query.
             anchor (Seal | None): anchored seal to search for.
             wits (list | None): explicit witnesses to target; otherwise uses endpoints.
+            completion: explicit local-state target, required for TCP.
         """
         qry = dict(s=sn, fn=fn)
         if anchor is not None:
@@ -663,17 +661,85 @@ class WitnessInquisitor(doing.DoDoer):
         msg = dict(src=src, pre=pre, target=pre, r=r, q=qry, wits=wits)
         if hab is not None:
             msg["hab"] = hab
+        if completion is not None:
+            msg["completion"] = completion
 
         self.msgs.append(msg)
+        return msg
 
-    def telquery(self, ri, src=None, i=None, r="tels", hab=None, pre=None, wits=None, **kwa):
+    def telquery(self, ri, src=None, i=None, r="tels", hab=None, pre=None, wits=None,
+                 completion=None, **kwa):
         """Queue a TEL query request for later sending."""
         qry = dict(ri=ri)
         msg = dict(src=src, pre=pre, target=i, r=r, wits=wits, q=qry)
         if hab is not None:
             msg["hab"] = hab
 
+        if completion is not None:
+            msg["completion"] = completion
         self.msgs.append(msg)
+        return msg
+
+
+class QueryAttempt(doing.DoDoer):
+    """Own one messenger until its explicit target or a terminal outcome.
+
+    HTTP dispatch releases the request connection immediately. Verification can
+    continue through the caller's mailbox/parser. TCP keeps its receive parser
+    alive until the target is satisfied. The single deadline covers both phases.
+    """
+
+    def __init__(self, owner, query, messenger, completion, timeout):
+        self.owner = owner
+        self.query = query
+        self.messenger = messenger
+        self.completion = completion
+        self.timeout = timeout
+        self.dispatched = False
+        self.status = None
+        super().__init__(doers=[doing.doify(self.run)])
+
+    def run(self, tymth=None, tock=0.0, **opts):
+        self.wind(tymth)
+        stop = self.tyme + self.timeout
+        witer = self.messenger
+        error = None
+        try:
+            yield tock
+            self.extend([witer])
+            while True:
+                # Idle means the complete introduction/query batch drained.
+                if not self.dispatched and witer.idle:
+                    self.owner.sent.append(witer.sent.pop())
+                    self.dispatched = True
+                    if isinstance(witer, HTTPMessenger):
+                        self.remove([witer])
+                    if self.completion is None:
+                        self.status = "dispatched"
+                        return True
+
+                if self.dispatched and self.completion.satisfied(self.owner.hby, self.owner.reger):
+                    self.status = "satisfied"
+                    return True
+                # HTTP teardown after dispatch must not invalidate a later mailbox result.
+                if witer.failed and not (self.dispatched and isinstance(witer, HTTPMessenger)):
+                    error = witer.error
+                    self.status = "failed"
+                    return True
+                if self.tyme >= stop:
+                    error = TimeoutError("witness query completion deadline expired")
+                    self.status = "timed_out"
+                    return True
+                yield tock
+        finally:
+            self.remove([witer])
+            if self.status is None:
+                self.status = "cancelled"
+            result = dict(query=self.query, wit=witer.wit, status=self.status)
+            if error is not None:
+                self.owner._recordFailure(self.query, witer.wit, error, status=self.status)
+            else:
+                self.owner.results.append(result)
 
 
 class WitnessPublisher(doing.DoDoer):
