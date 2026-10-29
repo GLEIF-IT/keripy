@@ -631,6 +631,9 @@ class WitnessInquisitor(doing.DoDoer):
             else:
                 # Successful completion takes precedence over a later transport close.
                 self.sent.append(witer.sent.pop())  # The query was queued last.
+                if isinstance(witer, HTTPMessenger):
+                    # HTTP has completed its response; TCP may still receive the queried KEL.
+                    self.remove([witer])
 
             yield tock
 
