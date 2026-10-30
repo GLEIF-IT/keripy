@@ -1,5 +1,16 @@
 # Change Log for keripy
 
+## GLEIF 1.2.19 — 2026-10-30
+
+- Avoid duplicate receipt queries while an equivalent Counselor query is queued.
+- Close successful HTTP witness query messengers and their idle connections.
+- Retain TCP replay parsers only until explicit release, transport failure,
+  owner shutdown, or expiry of the original query deadline. The default
+  `queryTimeout` remains 30 seconds; expiry is a failure, not verification.
+- Return the original request from `query()` and `telquery()` so owners can
+  release a completed query without disturbing other active requests.
+- Preserve `gleif_hio==0.6.22` and the 1.2.18 dependency security baseline.
+
 ## GLEIF 1.2.18 — 2026-10-29
 
 - Treat an already accepted delegated rotation as a duplicate before evaluating

@@ -1,4 +1,4 @@
-FROM gleif/keri:1.2.18
+FROM gleif/keri:1.2.19
 
 SHELL ["/bin/bash", "-c"]
 EXPOSE 5632
