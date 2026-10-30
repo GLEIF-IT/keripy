@@ -24,20 +24,34 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install libsodium
-      - name: Set up Python 3.12.2
+      - name: Set up Python 3.12.15
+        if: runner.os != 'macOS'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: 3.12.2
+          python-version: 3.12.15
+      - name: Set up Python on macOS
+        if: runner.os == 'macOS'
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.13.4'
+          python-version: '3.12.15'
+          activate-environment: true
+          venv-path: ${{ runner.temp }}/keripy-venv
+          enable-cache: false
+      - name: Seed pip on macOS
+        if: runner.os == 'macOS'
+        run: python -m ensurepip
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+          python -m pip install "setuptools>=84.1.0" "wheel>=0.46.2"
           pip install flake8 pytest
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip check
           python - <<'PYTHON'  # Verify the pinned version and exclusive hio import ownership.
           from importlib import metadata
 
-          assert metadata.version("gleif_hio") == "0.6.21"
+          assert metadata.version("gleif_hio") == "0.6.22"
           providers = {
               name.replace("_", "-")
               for name in metadata.packages_distributions()["hio"]
@@ -65,20 +79,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Python 3.12.2
+      - name: Set up Python 3.12.15
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: 3.12.2
+          python-version: 3.12.15
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+          python -m pip install "setuptools>=84.1.0" "wheel>=0.46.2"
           pip install pytest pytest-cov
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip check
           python - <<'PYTHON'  # Verify the pinned version and exclusive hio import ownership.
           from importlib import metadata
 
-          assert metadata.version("gleif_hio") == "0.6.21"
+          assert metadata.version("gleif_hio") == "0.6.22"
           providers = {
               name.replace("_", "-")
               for name in metadata.packages_distributions()["hio"]
@@ -97,20 +112,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Python 3.12.2
+      - name: Set up Python 3.12.15
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: 3.12.2
+          python-version: 3.12.15
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+          python -m pip install "setuptools>=84.1.0" "wheel>=0.46.2"
           pip install pytest pytest-cov pytest-shell
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip check
           python - <<'PYTHON'  # Verify the pinned version and exclusive hio import ownership.
           from importlib import metadata
 
-          assert metadata.version("gleif_hio") == "0.6.21"
+          assert metadata.version("gleif_hio") == "0.6.22"
           providers = {
               name.replace("_", "-")
               for name in metadata.packages_distributions()["hio"]
@@ -155,3 +171,16 @@ jobs:
           docker push ghcr.io/${{ env.GITHUB_REPOSITORY_NAME }}/keripy-interop:latest
           mkdir -p ${GITHUB_WORKSPACE}/cache
           touch ${GITHUB_WORKSPACE}/cache/${{ env.CACHE_KEY_INTEROP }}
+
+  container:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build release image
+        run: docker build --pull --no-cache -f images/keripy.dockerfile -t keri-security .
+      - name: Check installed CLI
+        run: docker run --rm keri-security --help

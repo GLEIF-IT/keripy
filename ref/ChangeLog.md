@@ -1,5 +1,22 @@
 # Change Log for keripy
 
+## GLEIF 1.2.18 — 2026-10-29
+
+- Treat an already accepted delegated rotation as a duplicate before evaluating
+  superseding delegated recovery. This prevents replayed `drt` events from
+  entering partial-signature escrow and blocking later delegated rotations.
+- Adopt `gleif_hio==0.6.22`, including the maintained HTTP connection cleanup
+  and transport fixes in the GLEIF HIO distribution.
+- Raise the CBOR, MessagePack, multidict, cryptography, pip, setuptools, and
+  wheel security floors. In particular, require MessagePack 1.2.3 for
+  CVE-2026-114613 and setuptools 84.1.0 for GHSA-xmj3-9gf7-h52w.
+- Build the release wheel on Python 3.12.15 and Alpine 3.23 from refreshed
+  platform packages, remove package installers from the runtime image, and
+  publish AMD64 and ARM64 images as `gleif/keri:1.2.18` and `latest`.
+- Preserve the validated `lmdb>=1.4.1,<=1.8.1` compatibility range. The import
+  packages remain `keri` and `hio`; do not install the upstream distributions
+  alongside the GLEIF packages.
+
 ## GLEIF 1.2.15 — 2026-10-14
 
 - Promote the 1.2.15rc1 implementation to the final `gleif_keri==1.2.15` release.
