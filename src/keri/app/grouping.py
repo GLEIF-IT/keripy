@@ -220,7 +220,9 @@ class Counselor(doing.DoDoer):
                 self.hby.db.gpwe.rem(keys=(pre,))
                 self.hby.db.cgms.put(keys=(pre, seqner.qb64), val=saider)
             elif not witer:
-                self.witDoer.gets.append(dict(pre=pre, sn=seqner.sn))
+                request = dict(pre=pre, sn=seqner.sn)
+                if request not in self.witDoer.gets:
+                    self.witDoer.gets.append(request)
 
 
 class MultisigNotificationHandler:
