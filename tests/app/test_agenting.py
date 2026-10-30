@@ -1205,6 +1205,27 @@ def test_witness_inquisitor_queries_real_http_witness(ownWitness):
         assert hab.kevers[session.target.pre].serder.said == session.target.kever.serder.said
 
 
+def test_witness_inquisitor_closes_successful_http_queries():
+    """Repeated successful queries release their messenger and live socket."""
+    with openQueryHttpPeer(firstResponse="accepted") as (hab, inquisitor, peer, doist):
+        for sn in ("0", "1"):
+            inquisitor.query(pre=hab.pre, src=hab.pre, sn=sn, wits=[peer.wit])
+            advanceQueryUntil(doist,
+                              lambda: any(isinstance(child, agenting.HTTPMessenger)
+                                          for child in inquisitor.doers),
+                              "query messenger was not scheduled")
+            messenger = next(child for child in inquisitor.doers
+                             if isinstance(child, agenting.HTTPMessenger))
+            advanceQueryUntil(doist, lambda: inquisitor.sent or inquisitor.failures,
+                              "query did not finish")
+            assert not inquisitor.failures
+            assert inquisitor.sent.popleft().status == 204
+            assert messenger not in inquisitor.doers
+            assert not messenger.deeds
+            assert messenger.client.connector.cs is None
+        assert peer.queries == 2
+
+
 def test_witness_inquisitor_reports_tcp_query_after_introduction():
     """The TCP cue contains the query bytes rather than the preceding introduction."""
     with habbing.openHab(name="query-tcp-peer", temp=True, transferable=False) as (_, peerHab), \
