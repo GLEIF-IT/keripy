@@ -511,7 +511,8 @@ class WitnessInquisitor(doing.DoDoer):
     Attributes:
         queryTimeout (float): finite positive per-attempt budget in scheduler
             seconds, default 30.0. Covers connection, introduction, and query
-            transmission/HTTP response, starting when the messenger is scheduled.
+            transmission/HTTP response and TCP receive retention, starting when the
+            messenger is scheduled. Expiry is not evidence of query success.
         failures (Deck): consumable dicts containing the original ``query``
             request, selected ``wit``, and typed ``error``. Owner deadline expiry
             is a TimeoutError; it does not fabricate an HIO transport error.
@@ -525,7 +526,7 @@ class WitnessInquisitor(doing.DoDoer):
             reger (Reger | None): optional registry database handle.
             msgs (Deck): query requests built by `query`/`telquery`.
             klas (type | None): messenger class, defaults to `HTTPMessenger`.
-            queryTimeout (float): maximum scheduler seconds for one dispatch attempt.
+            queryTimeout (float): maximum scheduler seconds for dispatch and TCP receive retention.
         """
         self.queryTimeout = float(queryTimeout)
         if not math.isfinite(self.queryTimeout) or self.queryTimeout <= 0.0:
@@ -536,10 +537,12 @@ class WitnessInquisitor(doing.DoDoer):
         self.klas = klas if klas is not None else HTTPMessenger
         self.msgs = msgs if msgs is not None else decking.Deck()
         self.sent = decking.Deck()
+        self.receiving = {}  # Request identity -> (request, messenger, deadline).
 
         super(WitnessInquisitor, self).__init__(
             doers=[doing.doify(self.msgDo,
-                               tock=hby.tocks["witnessInquisitor"])], **kwa)
+                               tock=hby.tocks["witnessInquisitor"]),
+                   doing.doify(self.receiveDo, tock=hby.tocks["witnessInquisitor"])], **kwa)
 
     def msgDo(self, tymth=None, tock=0.0, **opts):
         """Send each introduction/query batch, retaining failure without stalling the queue."""
@@ -634,13 +637,78 @@ class WitnessInquisitor(doing.DoDoer):
                 if isinstance(witer, HTTPMessenger):
                     # HTTP has completed its response; TCP may still receive the queried KEL.
                     self.remove([witer])
+                else:
+                    # Distinguish equal requests by object identity. Retaining evt
+                    # also prevents Python from reusing its id while tracked here.
+                    self.receiving[id(evt)] = (evt, witer, stop)
 
             yield tock
 
+    def receiveDo(self, tymth=None, tock=0.0, **opts):
+        """Bound TCP receive retention independently of later query dispatches.
+
+        Sending is not replay completion. Keep the parser alive until the caller
+        releases its request, transport fails, or the original deadline expires.
+        Track the original request dictionaries returned by query()/telquery(),
+        alongside their messengers and absolute scheduler-time deadlines.
+        Finalization releases all remaining receivers without declaring success.
+
+        Parameters:
+            tymth (callable | None): scheduler clock supplied by the doer runner;
+                the owning inquisitor is wound by msgDo().
+            tock (float): requested interval between checks, in seconds.
+            **opts: additional scheduler options, unused.
+        """
+        yield tock
+        try:
+            while True:
+                for request, messenger, stop in list(self.receiving.values()):
+                    error = messenger.error if messenger.failed else None
+                    if error is None and self.tyme >= stop:
+                        error = TimeoutError("witness query receive lifetime expired")
+                    if error is not None:
+                        self._recordFailure(request, messenger.wit, error)
+                        self.release(request)
+                yield tock
+        finally:
+            for request, _, _ in list(self.receiving.values()):
+                self.release(request)
+
+    def release(self, request):
+        """Release a dispatched TCP query after the owner's completion check.
+
+        Remove the request's retained messenger and its parser children, closing
+        the TCP socket. The caller decides when its required state is satisfied;
+        this method neither checks that state nor emits a success notification.
+
+        Parameters:
+            request (dict): the exact object returned by this inquisitor's
+                query() or telquery(), not a copy or a reconstructed dictionary.
+                It is the queued request description, not the serialized CESR
+                message, an HTTP response, or an entry from the sent queue.
+
+        Matching uses id(request), Python's identity for this object during its
+        lifetime, rather than dictionary equality or a protocol identifier.
+        Separate requests with identical contents therefore release independently.
+        The receiving table retains the original object until cleanup.
+
+        Only dispatched TCP requests in the receiving table are affected.
+        Queued/sending requests, HTTP requests, unknown objects, and requests
+        already released are no-ops. An early call does not schedule a future
+        release; callers must release after dispatch or remove the owning
+        inquisitor to shut down all its work.
+
+        Returns:
+            None.
+        """
+        retained = self.receiving.pop(id(request), None)
+        if retained is not None:
+            self.remove([retained[1]])
+
     def _recordFailure(self, query, wit, error):
-        """Retain one dispatch failure and log enough context to identify its query."""
+        """Retain one attempt failure and log enough context to identify its query."""
         self.failures.append(dict(query=query, wit=wit, error=error))
-        logger.error("Witness query dispatch failed: src=%s target=%s route=%s wit=%s: %s: %s",
+        logger.error("Witness query failed: src=%s target=%s route=%s wit=%s: %s: %s",
                      query["src"], query["target"], query["r"], wit, type(error).__name__, error)
 
     def query(self, pre, r="logs", sn='0', fn='0', src=None, hab=None, anchor=None, wits=None, **kwa):
@@ -655,6 +723,11 @@ class WitnessInquisitor(doing.DoDoer):
             hab (Hab | None): habitat used to sign and route the query.
             anchor (Seal | None): anchored seal to search for.
             wits (list | None): explicit witnesses to target; otherwise uses endpoints.
+
+        Returns:
+            dict: the original queued request object. Retain this exact object
+                to call release() after TCP dispatch; copying it loses the handle.
+                Existing callers may ignore it and keep their completion checks.
         """
         qry = dict(s=sn, fn=fn)
         if anchor is not None:
@@ -665,15 +738,32 @@ class WitnessInquisitor(doing.DoDoer):
             msg["hab"] = hab
 
         self.msgs.append(msg)
+        return msg
 
     def telquery(self, ri, src=None, i=None, r="tels", hab=None, pre=None, wits=None, **kwa):
-        """Queue a TEL query request for later sending."""
+        """Queue a TEL query and return its request handle.
+
+        Parameters:
+            ri (str): registry identifier to query.
+            src (str | None): local source AID, ignored when hab is supplied.
+            i (str | None): target identifier, such as the credential SAID.
+            r (str): query route, default "tels".
+            hab (Hab | None): habitat used to sign the query.
+            pre (str | None): identifier whose endpoints are used for routing.
+            wits (list | None): explicit witnesses instead of endpoint lookup.
+            **kwa: additional options, unused.
+
+        Returns:
+            dict: the original queued request object. Pass this exact object to
+                release() after TCP dispatch; a copy is not the same handle.
+        """
         qry = dict(ri=ri)
         msg = dict(src=src, pre=pre, target=i, r=r, wits=wits, q=qry)
         if hab is not None:
             msg["hab"] = hab
 
         self.msgs.append(msg)
+        return msg
 
 
 class WitnessPublisher(doing.DoDoer):

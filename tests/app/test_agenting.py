@@ -1377,3 +1377,108 @@ def test_witness_inquisitor(mockHelpingNowUTC, seeder):
 
         assert palHab.pre in qinHab.kevers
         assert qinHab.pre in palHab.kevers
+
+
+@contextmanager
+def openQueryTcpPeer():
+    """Open a real inquisitor and a TCP peer with test-controlled replay timing.
+
+    Yield the inquisitor, requesting habitat, target habitat, witness habitat,
+    TCP server, and scheduler. Their context managers own resource cleanup.
+    """
+    with habbing.openHab(name="attempt-peer", temp=True, transferable=False) as (_, peer), \
+            habbing.openHby(name="attempt-controller", temp=True) as hby, \
+            habbing.openHab(name="attempt-target", temp=True) as (_, target):
+        hab = hby.makeHab(name="controller")
+        server = serving.Server(host="127.0.0.1", port=0)
+        assert server.reopen()
+        server.eha = server.ha
+        hby.db.locs.pin(keys=(peer.pre, kering.Schemes.tcp),
+                        val=basing.LocationRecord(url=f"tcp://127.0.0.1:{server.ha[1]}"))
+        inquisitor = agenting.WitnessInquisitor(hby=hby)
+        with openDoist(doers=[serving.ServerDoer(server=server), inquisitor],
+                       tock=0.03125, limit=60.0) as doist:
+            yield inquisitor, hab, target, peer, server, doist
+
+
+def test_tcp_query_release_preserves_fragmented_replay_and_other_requests():
+    """Owners release only their query, after their existing state check succeeds."""
+    with openQueryTcpPeer() as (iq, hab, target, peer, server, doist):
+        first = iq.query(pre=target.pre, src=hab.pre, wits=[peer.pre])
+        second = iq.query(pre=target.pre, src=hab.pre, wits=[peer.pre])
+        advanceQueryUntil(doist, lambda: len(iq.receiving) == 2, "queries did not dispatch")
+        messenger = iq.receiving[id(first)][1]
+        other = iq.receiving[id(second)][1]
+        # Match the peer socket to this request rather than relying on accept order.
+        remote = server.ixes[messenger.client.ca]
+        replay = bytearray(target.replay())
+        remote.tx(replay[:30])
+        advanceQueryUntil(doist, lambda: bool(messenger.client.rxbs), "fragment not received")
+        for _ in range(5):
+            doist.recur()
+        assert messenger.client.cs is not None
+        assert target.pre not in iq.hby.kevers
+
+        remote.tx(replay[30:])
+        advanceQueryUntil(doist, lambda: target.pre in iq.hby.kevers, "replay not accepted")
+        assert iq.hby.kevers[target.pre].serder.said == target.kever.serder.said
+        iq.release(first)
+        iq.release(first)  # Completion paths may converge on the same cleanup.
+        assert messenger.client.cs is None and not messenger.deeds
+        assert other.client.cs is not None
+        assert not iq.failures
+        iq.release(second)
+        assert not iq.receiving
+
+
+def test_tcp_query_deadline_closes_receiver_and_reports_timeout():
+    """An unanswered replay expires even after the query was transmitted."""
+    with openQueryTcpPeer() as (iq, hab, target, peer, server, doist):
+        request = iq.query(pre=target.pre, src=hab.pre, wits=[peer.pre])
+        advanceQueryUntil(doist, lambda: bool(iq.receiving), "query did not dispatch")
+        messenger = iq.receiving[id(request)][1]
+        assert iq.sent  # Sending does not establish replay completion.
+
+        doist.tyme += iq.queryTimeout + doist.tock
+        advanceQueryUntil(doist, lambda: not iq.receiving, "expired receiver was retained")
+        assert messenger.client.cs is None and not messenger.deeds
+        failure = iq.failures.popleft()
+        assert failure["query"] is request
+        assert isinstance(failure["error"], TimeoutError)
+
+
+def test_tcp_query_peer_reset_closes_receiver_and_reports_failure():
+    """A real peer reset releases the receiver and retains the request's error."""
+    with openQueryTcpPeer() as (iq, hab, target, peer, server, doist):
+        request = iq.query(pre=target.pre, src=hab.pre, wits=[peer.pre])
+        advanceQueryUntil(doist, lambda: bool(iq.receiving), "query did not dispatch")
+        messenger = iq.receiving[id(request)][1]
+        assert iq.sent
+
+        # Abort the peer socket with RST, then let real HIO service observe it.
+        remote = server.ixes[messenger.client.ca]
+        remote.cs.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        remote.cs.close()
+        remote.cs = None
+        del server.ixes[messenger.client.ca]
+        assert select.select([messenger.client.cs], [], [], 1.0)[0]
+
+        advanceQueryUntil(doist, lambda: not iq.receiving, "failed receiver was retained")
+        assert messenger.client.cs is None and not messenger.deeds
+        failure = iq.failures.popleft()
+        assert failure["query"] is request
+        assert isinstance(failure["error"], OSError)
+
+
+def test_inquisitor_shutdown_closes_receiver_without_reporting_failure():
+    """Owner shutdown cancels retained receive work without inventing a failure."""
+    with openQueryTcpPeer() as (iq, hab, target, peer, server, doist):
+        request = iq.query(pre=target.pre, src=hab.pre, wits=[peer.pre])
+        advanceQueryUntil(doist, lambda: bool(iq.receiving), "query did not dispatch")
+        messenger = iq.receiving[id(request)][1]
+        assert iq.sent
+
+        doist.remove([iq])
+        assert not iq.receiving
+        assert messenger.client.cs is None and not messenger.deeds
+        assert not iq.failures
