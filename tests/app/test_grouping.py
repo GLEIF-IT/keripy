@@ -236,6 +236,34 @@ def test_counselor():
         assert counselor.complete(prefixer=prefixer, seqner=seqner, saider=saider)
 
 
+def test_counselor_receipt_queries_are_unique_while_queued():
+    with habbing.openHby(name="receipt_queries") as hby:
+        leader = hby.makeHab(name="leader")
+        follower = hby.makeHab(name="follower")
+        witness = hby.makeHab(name="witness", transferable=False)
+        ghab = hby.makeGroupHab(group="group", mhab=follower,
+                                smids=[leader.pre, follower.pre],
+                                isith="1", nsith="1", toad=1, wits=[witness.pre])
+        counselor = grouping.Counselor(hby=hby)
+        seqner = coring.Seqner(sn=0)
+        saider = coring.Saider(qb64=ghab.kever.serder.said)
+        hby.db.gpwe.add(keys=(ghab.pre,), val=(seqner, saider))
+        request = dict(pre=ghab.pre, sn=0)
+        other = dict(pre=ghab.pre, sn=1)
+        counselor.witDoer.gets.append(other)
+
+        # Repeated follower escrow passes must preserve distinct event requests.
+        for _ in range(3):
+            counselor.processPartialWitnessEscrow()
+        assert list(counselor.witDoer.gets) == [other, request]
+
+        assert counselor.witDoer.gets.popleft() == other
+        assert counselor.witDoer.gets.popleft() == request
+        # Once drained, an event still missing receipts may be queried again.
+        counselor.processPartialWitnessEscrow()
+        assert list(counselor.witDoer.gets) == [request]
+
+
 def test_the_seven():
     salt = b'0123456789abcdef'
     prefix = "counselor"
