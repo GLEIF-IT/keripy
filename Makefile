@@ -1,8 +1,8 @@
 
 .PHONY: build-keri build-witness-demo publish-keri-witness-demo publish-keri
 
-VERSION=1.2.17
-REGISTRY=weboftrust
+VERSION=1.2.18
+REGISTRY=gleif
 IMAGE=keri
 LATEST_TAG=$(REGISTRY)/$(IMAGE):latest
 VERSIONED_TAG=$(REGISTRY)/$(IMAGE):$(VERSION)

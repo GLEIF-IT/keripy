@@ -12,7 +12,7 @@ RUN apk add --no-cache build-base libffi-dev libsodium-dev cargo
 WORKDIR /keripy
 COPY setup.py ./
 COPY src/ src/
-RUN python -m pip install --no-cache-dir 'setuptools>=83.0.0' 'wheel>=0.46.2' \
+RUN python -m pip install --no-cache-dir 'setuptools>=84.1.0' 'wheel>=0.46.2' \
     && python -m pip wheel --no-build-isolation --no-deps --wheel-dir /wheels .
 RUN python -m venv --without-pip /keripy/venv \
     && python -m pip --python /keripy/venv install --no-cache-dir /wheels/*.whl \

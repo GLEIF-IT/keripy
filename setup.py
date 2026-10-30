@@ -79,7 +79,7 @@ setup(
                         'lmdb>=1.4.1,<=1.8.1',
                         'pysodium>=0.7.17',
                         'blake3>=0.4.1',
-                        'msgpack>=1.2.1',
+                        'msgpack>=1.2.3',
                         'cbor2>=5.9.0',
                         'multidict>=6.9.1,<7.1',
                         'ordered-set>=4.1.0',
