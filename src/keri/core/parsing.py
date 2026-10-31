@@ -145,7 +145,8 @@ class Parser:
                 ims msgs when stream includes pipelined count codes.
 
         Returns:
-
+            list: (counter code, signature group) pairs after complete extraction.
+                Yields only while waiting for more bytes; use with yield from.
         """
         if ctr.code != CtrDex_1_0.SadPathSigGroups:
             raise kering.UnexpectedCountCodeError("Wrong "
@@ -164,8 +165,9 @@ class Parser:
                                           cold=cold,
                                           abort=pipelined)
         if sctr.code == CtrDex_1_0.TransIdxSigGroups:
-            for prefixer, seqner, saider, isigers in self._transIdxSigGroups(sctr, ims, cold=cold, pipelined=pipelined):
-                yield sctr.code, (subpath, prefixer, seqner, saider, isigers)
+            groups = yield from self._transIdxSigGroups(sctr, ims, cold=cold, pipelined=pipelined)
+            return [(sctr.code, (subpath, prefixer, seqner, saider, isigers))
+                    for prefixer, seqner, saider, isigers in groups]
         elif sctr.code == CtrDex_1_0.ControllerIdxSigs:
             isigers = []
             for i in range(sctr.count):  # extract each attached signature
@@ -174,10 +176,10 @@ class Parser:
                                                     cold=cold,
                                                     abort=pipelined)
                 isigers.append(isiger)
-            yield sctr.code, (subpath, isigers)
+            return [(sctr.code, (subpath, isigers))]
         elif sctr.code == CtrDex_1_0.NonTransReceiptCouples:
-            for cigar in self._nonTransReceiptCouples(ctr=sctr, ims=ims, cold=cold, pipelined=pipelined):
-                yield sctr.code, (subpath, cigar)
+            cigars = yield from self._nonTransReceiptCouples(ctr=sctr, ims=ims, cold=cold, pipelined=pipelined)
+            return [(sctr.code, (subpath, cigar)) for cigar in cigars]
         else:
             raise kering.UnexpectedCountCodeError("Wrong "
                                                   "count code={}.Expected code={}."
@@ -204,9 +206,11 @@ class Parser:
             pipelined (bool) True means use pipeline processor to process
                 ims msgs when stream includes pipelined count codes.
 
-        Yields:
-
+        Returns:
+            list: extracted (prefixer, seqner, saider, signatures) groups.
+                Yields only while waiting for more bytes; use with yield from.
         """
+        groups = []
         for i in range(ctr.count):  # extract each attached groups
             prefixer = yield from self._extractor(ims,
                                                   klas=Prefixer,
@@ -236,7 +240,8 @@ class Parser:
                                                     abort=pipelined)
                 isigers.append(isiger)
 
-            yield prefixer, seqner, saider, isigers
+            groups.append((prefixer, seqner, saider, isigers))
+        return groups
 
 
     def _nonTransReceiptCouples(self, ctr, ims, cold=Colds.txt, pipelined=False):
@@ -255,9 +260,11 @@ class Parser:
             pipelined (bool) True means use pipeline processor to process
                 ims msgs when stream includes pipelined count codes.
 
-        Yields:
-
+        Returns:
+            list: extracted Cigars with their Verfers attached.
+                Yields only while waiting for more bytes; use with yield from.
         """
+        cigars = []
         for i in range(ctr.count):  # extract each attached couple
             verfer = yield from self._extractor(ims=ims,
                                                 klas=Verfer,
@@ -269,7 +276,8 @@ class Parser:
                                                abort=pipelined)
             cigar.verfer = verfer
 
-            yield cigar
+            cigars.append(cigar)
+        return cigars
 
 
     def parse(self, ims=None, framed=None, pipeline=None, kvy=None, tvy=None,
@@ -798,11 +806,11 @@ class Parser:
                         # extract attached rct couplets into list of sigvers
                         # verfer property of cigar is the identifier prefix
                         # cigar itself has the attached signature
-                        for cigar in self._nonTransReceiptCouples(ctr=ctr,
-                                                                  ims=ims,
-                                                                  cold=cold,
-                                                        pipelined=pipelined):
-                            cigars.append(cigar)
+                        couples = yield from self._nonTransReceiptCouples(ctr=ctr,
+                                                                         ims=ims,
+                                                                         cold=cold,
+                                                                         pipelined=pipelined)
+                        cigars.extend(couples)
 
                     elif ctr.code == CtrDex_1_0.TransReceiptQuadruples:
                         # extract attaced trans receipt vrc quadruple
@@ -839,10 +847,9 @@ class Parser:
                         # dig is dig of signer's est event when signed
                         # followed by counter for ControllerIdxSigs with attached
                         # indexed sigs from trans signer (endorser).
-                        for (prefixer, seqner, saider, isigers) in \
-                                self._transIdxSigGroups(ctr, ims, cold=cold,
-                                                        pipelined=pipelined):
-                            tsgs.append((prefixer, seqner, saider, isigers))
+                        groups = yield from self._transIdxSigGroups(ctr, ims, cold=cold,
+                                                                    pipelined=pipelined)
+                        tsgs.extend(groups)
 
                     elif ctr.code == CtrDex_1_0.TransLastIdxSigGroups:
                         # extract attaced signer seal indexed sig groups each made of
@@ -935,11 +942,12 @@ class Parser:
                                                               klas=Counter,
                                                               cold=cold,
                                                               abort=pipelined)
-                            for code, sigs in self._sadPathSigGroup(ctr=ictr,
-                                                                    ims=ims,
-                                                                    root=path,
-                                                                    cold=cold,
-                                                                    pipelined=pipelined):
+                            groups = yield from self._sadPathSigGroup(ctr=ictr,
+                                                                     ims=ims,
+                                                                     root=path,
+                                                                     cold=cold,
+                                                                     pipelined=pipelined)
+                            for code, sigs in groups:
                                 if code == CtrDex_1_0.TransIdxSigGroups:
                                     sadtsgs.append(sigs)
                                 else:
